@@ -1,4 +1,4 @@
-package com.example.smart_home_automation
+package com.easyhomecontrol.app
 
 import io.flutter.embedding.android.FlutterActivity
 
