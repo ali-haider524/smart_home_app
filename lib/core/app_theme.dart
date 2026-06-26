@@ -1,27 +1,64 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const Color background = Color(0xFFF4F7FB);
-  static const Color primary = Color(0xFF2F6DA5);
+  static const Color primary = Color(0xFF2563EB);
+  static const Color primaryDark = Color(0xFF1E40AF);
+
+  static const Color darkText = Color(0xFF0F172A);
+  static const Color lightText = Color(0xFF64748B);
+
+  static const Color background = Color(0xFFF3F6FB);
   static const Color card = Color(0xFFFFFFFF);
-  static const Color textDark = Color(0xFF1F2933);
-  static const Color textLight = Color(0xFF6B7280);
 
   static ThemeData lightTheme = ThemeData(
+    useMaterial3: true,
     scaffoldBackgroundColor: background,
     fontFamily: 'Roboto',
-    colorScheme: ColorScheme.fromSeed(seedColor: primary),
-    useMaterial3: true,
-    appBarTheme: const AppBarTheme(
-      backgroundColor: background,
-      elevation: 0,
-      centerTitle: false,
-      titleTextStyle: TextStyle(
-        color: textDark,
-        fontSize: 22,
-        fontWeight: FontWeight.w600,
+
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: primary,
+      brightness: Brightness.light,
+    ),
+
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: primaryDark,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+        ),
       ),
-      iconTheme: IconThemeData(color: textDark),
+    ),
+
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: card,
+      hintStyle: const TextStyle(
+        color: lightText,
+        fontSize: 14,
+      ),
+      prefixIconColor: darkText,
+      suffixIconColor: lightText,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(20),
+        borderSide: BorderSide.none,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(20),
+        borderSide: BorderSide.none,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(20),
+        borderSide: const BorderSide(
+          color: primary,
+          width: 1.4,
+        ),
+      ),
+      contentPadding: const EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: 18,
+      ),
     ),
   );
 }

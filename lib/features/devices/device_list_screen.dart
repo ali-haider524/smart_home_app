@@ -86,7 +86,7 @@ class DeviceCard extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w600,
-                    color: AppTheme.textDark,
+                    color: AppTheme.darkText,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -94,7 +94,7 @@ class DeviceCard extends StatelessWidget {
                   status,
                   style: TextStyle(
                     fontSize: 13,
-                    color: isOn ? Colors.green : AppTheme.textLight,
+                    color: isOn ? Colors.green : AppTheme.lightText,
                   ),
                 ),
               ],

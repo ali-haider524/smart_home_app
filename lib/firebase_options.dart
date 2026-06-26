@@ -55,6 +55,7 @@ class DefaultFirebaseOptions {
     appId: '1:86206417952:android:9acfc7426c71ae06ba0045',
     messagingSenderId: '86206417952',
     projectId: 'easyhomecontrol-1',
+    databaseURL: 'https://easyhomecontrol-1-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'easyhomecontrol-1.firebasestorage.app',
   );
 
