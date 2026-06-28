@@ -1,0 +1,4 @@
+enum PhoneAuthMode {
+  signIn,
+  linkToCurrentAccount,
+}

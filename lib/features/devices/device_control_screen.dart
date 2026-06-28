@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
 import '../../models/device_model.dart';
+import '../../models/schedule_model.dart';
 import '../../services/app_ticker.dart';
 import '../../services/device_service.dart';
+import 'device_settings_screen.dart';
+import 'wifi_setup_screen.dart';
 
 class DeviceControlScreen extends StatefulWidget {
   final String deviceId;
+  final String deviceName;
 
   const DeviceControlScreen({
     super.key,
     required this.deviceId,
+    this.deviceName = 'Smart Switch',
   });
 
   @override
@@ -22,22 +28,31 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
 
   final DeviceService deviceService = DeviceService();
   final TextEditingController customTimerController = TextEditingController();
-
-  TimeOfDay? onTime;
-  TimeOfDay? offTime;
+  late String _deviceName;
 
   int? selectedTimerMinutes;
   String? selectedTimerLabel;
 
   final List<_TimerOption> timerOptions = const [
-    _TimerOption('15 min', 15),
-    _TimerOption('30 min', 30),
     _TimerOption('1 hour', 60),
     _TimerOption('2 hours', 120),
     _TimerOption('3 hours', 180),
     _TimerOption('4 hours', 240),
+    _TimerOption('5 hours', 300),
+    _TimerOption('6 hours', 360),
+    _TimerOption('7 hours', 420),
     _TimerOption('8 hours', 480),
+    _TimerOption('9 hours', 540),
+    _TimerOption('10 hours', 600),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _deviceName = widget.deviceName.trim().isEmpty
+        ? 'Smart Switch'
+        : widget.deviceName.trim();
+  }
 
   @override
   void dispose() {
@@ -97,68 +112,79 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
     showMessage('Timer cancelled');
   }
 
-  Future<void> pickOnTime() async {
-    final picked = await showTimePicker(
+  Future<void> openScheduleManager(
+      List<ScheduleItem> currentItems,
+      ) async {
+    final updatedItems = await showModalBottomSheet<List<ScheduleItem>>(
       context: context,
-      initialTime: onTime ?? TimeOfDay.now(),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+        return _ScheduleManagerSheet(initialItems: currentItems);
+      },
     );
 
-    if (picked != null) {
-      setState(() => onTime = picked);
-    }
-  }
-
-  Future<void> pickOffTime() async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: offTime ?? TimeOfDay.now(),
-    );
-
-    if (picked != null) {
-      setState(() => offTime = picked);
-    }
-  }
-
-  Future<void> saveSchedule() async {
-    if (onTime == null || offTime == null) {
-      showMessage('Please select ON time and OFF time');
+    if (updatedItems == null) {
       return;
     }
 
-    await deviceService.saveDailySchedule(
-      deviceId: widget.deviceId,
-      channelId: channelId,
-      onHour: onTime!.hour,
-      onMinute: onTime!.minute,
-      offHour: offTime!.hour,
-      offMinute: offTime!.minute,
-    );
+    try {
+      await deviceService.saveSchedules(
+        deviceId: widget.deviceId,
+        channelId: channelId,
+        items: updatedItems,
+      );
 
-    showMessage('Daily schedule saved');
+      showMessage(
+        updatedItems.isEmpty
+            ? 'All schedules removed'
+            : '${updatedItems.length} schedule${updatedItems.length == 1 ? '' : 's'} saved',
+      );
+    } on ArgumentError catch (error) {
+      showMessage(error.message.toString());
+    } catch (_) {
+      showMessage('Could not save schedules. Please try again.');
+    }
   }
 
-  Future<void> cancelSchedule() async {
-    await deviceService.cancelSchedule(
-      deviceId: widget.deviceId,
-      channelId: channelId,
-    );
-
-    showMessage('Schedule cancelled');
-  }
-
-  void showMessage(String message) {
+  void showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
     if (!mounted) return;
+    AppNotice.show(context, message, type: type);
+  }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
+  Future<void> openDeviceSettings() async {
+    final result = await Navigator.push<DeviceSettingsResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DeviceSettingsScreen(
+          deviceId: widget.deviceId,
+          initialDeviceName: _deviceName,
+        ),
       ),
     );
-  }
 
-  String formatScheduleTime(BuildContext context, int hour, int minute) {
-    return TimeOfDay(hour: hour, minute: minute).format(context);
+    if (!mounted || result == null) return;
+
+    if (result.removed) {
+      Navigator.pop(context);
+      return;
+    }
+
+    if (result.nickname != null && result.nickname!.trim().isNotEmpty) {
+      setState(() => _deviceName = result.nickname!.trim());
+    }
+
+    if (result.openWiFiSetup) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WifiSetupScreen(
+            deviceId: widget.deviceId,
+            deviceName: _deviceName,
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -166,9 +192,17 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text('Smart Switch'),
+        title: Text(_deviceName),
         backgroundColor: AppTheme.background,
         elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: 'Device settings',
+            onPressed: openDeviceSettings,
+            icon: const Icon(Icons.settings_rounded),
+          ),
+          const SizedBox(width: 4),
+        ],
       ),
       body: StreamBuilder<DeviceModel?>(
         stream: deviceService.listenDevice(widget.deviceId),
@@ -254,26 +288,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
                       onCancel: cancelRunTimer,
                     ),
                     const SizedBox(height: 30),
-                    const _SectionTitle(title: 'Daily Schedule'),
+                    const _SectionTitle(title: 'Weekly Schedules'),
                     const SizedBox(height: 14),
-                    if (schedule != null && schedule.enabled)
-                      _ActiveInfoCard(
-                        icon: Icons.schedule_rounded,
-                        title: 'Schedule Active',
-                        value:
-                        '${formatScheduleTime(context, schedule.onHour, schedule.onMinute)} → ${formatScheduleTime(context, schedule.offHour, schedule.offMinute)}',
-                        subtitle: 'Repeats daily',
-                        color: Colors.blue,
-                      ),
-                    if (schedule != null && schedule.enabled)
-                      const SizedBox(height: 12),
-                    _ScheduleCard(
-                      onTime: onTime,
-                      offTime: offTime,
-                      onPickOnTime: pickOnTime,
-                      onPickOffTime: pickOffTime,
-                      onSave: saveSchedule,
-                      onCancel: cancelSchedule,
+                    _ScheduleOverviewCard(
+                      schedules: schedule?.orderedItems ?? const [],
+                      onManage: () {
+                        openScheduleManager(
+                          schedule?.orderedItems ?? const [],
+                        );
+                      },
                     ),
                     const SizedBox(height: 26),
                     _DeviceInfoCard(device: device),
@@ -542,75 +565,110 @@ class _TimerSelectorCard extends StatelessWidget {
   }
 }
 
-class _ScheduleCard extends StatelessWidget {
-  final TimeOfDay? onTime;
-  final TimeOfDay? offTime;
-  final VoidCallback onPickOnTime;
-  final VoidCallback onPickOffTime;
-  final VoidCallback onSave;
-  final VoidCallback onCancel;
+class _ScheduleOverviewCard extends StatelessWidget {
+  final List<ScheduleItem> schedules;
+  final VoidCallback onManage;
 
-  const _ScheduleCard({
-    required this.onTime,
-    required this.offTime,
-    required this.onPickOnTime,
-    required this.onPickOffTime,
-    required this.onSave,
-    required this.onCancel,
+  const _ScheduleOverviewCard({
+    required this.schedules,
+    required this.onManage,
   });
 
   @override
   Widget build(BuildContext context) {
+    final activeSchedules =
+    schedules.where((item) => item.enabled).toList(growable: false);
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppTheme.card,
         borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.045),
+            blurRadius: 18,
+            offset: const Offset(6, 10),
+          ),
+          BoxShadow(
+            color: Colors.white.withOpacity(0.9),
+            blurRadius: 14,
+            offset: const Offset(-5, -5),
+          ),
+        ],
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onPickOnTime,
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: Text(
-                    onTime == null ? 'ON Time' : 'ON ${onTime!.format(context)}',
-                  ),
+              Container(
+                height: 44,
+                width: 44,
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: const Icon(
+                  Icons.calendar_month_rounded,
+                  color: Colors.blue,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onPickOffTime,
-                  icon: const Icon(Icons.stop_rounded),
-                  label: Text(
-                    offTime == null
-                        ? 'OFF Time'
-                        : 'OFF ${offTime!.format(context)}',
+                child: Text(
+                  activeSchedules.isEmpty
+                      ? 'No active schedules'
+                      : '${activeSchedules.length} active schedule${activeSchedules.length == 1 ? '' : 's'}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
+              ),
+              TextButton(
+                onPressed: onManage,
+                child: const Text('Manage'),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          SizedBox(
-            height: 52,
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: onSave,
-              icon: const Icon(Icons.schedule_rounded),
-              label: const Text('Save Daily Schedule'),
+          if (activeSchedules.isEmpty)
+            const Text(
+              'Create up to 6 recurring schedules and choose the days for each one.',
+              style: TextStyle(
+                fontSize: 13,
+                color: AppTheme.lightText,
+              ),
+            )
+          else
+            ...activeSchedules.take(3).map(
+                  (item) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _SchedulePreviewRow(item: item),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
+          if (activeSchedules.length > 3)
+            Text(
+              '+${activeSchedules.length - 3} more schedule${activeSchedules.length - 3 == 1 ? '' : 's'}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.primary,
+              ),
+            ),
+          const SizedBox(height: 6),
           SizedBox(
-            height: 52,
             width: double.infinity,
-            child: OutlinedButton(
-              onPressed: onCancel,
-              child: const Text('Cancel Schedule'),
+            height: 50,
+            child: OutlinedButton.icon(
+              onPressed: onManage,
+              icon: const Icon(Icons.edit_calendar_rounded),
+              label: Text(
+                activeSchedules.isEmpty
+                    ? 'Add Schedules'
+                    : 'Manage Schedules',
+              ),
             ),
           ),
         ],
@@ -619,6 +677,474 @@ class _ScheduleCard extends StatelessWidget {
   }
 }
 
+class _SchedulePreviewRow extends StatelessWidget {
+  final ScheduleItem item;
+
+  const _SchedulePreviewRow({required this.item});
+
+  String _time(BuildContext context, int minutes) {
+    return TimeOfDay(
+      hour: minutes ~/ 60,
+      minute: minutes % 60,
+    ).format(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.blue.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule_rounded, size: 18, color: Colors.blue),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${_time(context, item.onMinutes)} → ${_time(context, item.offMinutes)}',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          Text(
+            item.daysSummary,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppTheme.lightText,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScheduleManagerSheet extends StatefulWidget {
+  final List<ScheduleItem> initialItems;
+
+  const _ScheduleManagerSheet({
+    required this.initialItems,
+  });
+
+  @override
+  State<_ScheduleManagerSheet> createState() => _ScheduleManagerSheetState();
+}
+
+class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
+  static const int _maxSchedules = 6;
+
+  late List<ScheduleItem> _items;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _items = widget.initialItems
+        .map((item) => item.copyWith())
+        .toList(growable: true)
+      ..sort((left, right) => left.id.compareTo(right.id));
+  }
+
+  String? _nextSlotId() {
+    for (var number = 1; number <= _maxSchedules; number++) {
+      final id = 's$number';
+      if (_items.every((item) => item.id != id)) {
+        return id;
+      }
+    }
+
+    return null;
+  }
+
+  void _addSchedule() {
+    final id = _nextSlotId();
+
+    if (id == null) {
+      _showMessage('Maximum $_maxSchedules schedules are allowed.');
+      return;
+    }
+
+    setState(() {
+      _items.add(ScheduleItem.empty(id));
+      _items.sort((left, right) => left.id.compareTo(right.id));
+    });
+  }
+
+  void _removeSchedule(String id) {
+    setState(() {
+      _items.removeWhere((item) => item.id == id);
+    });
+  }
+
+  void _updateSchedule(ScheduleItem updatedItem) {
+    setState(() {
+      final index = _items.indexWhere((item) => item.id == updatedItem.id);
+
+      if (index >= 0) {
+        _items[index] = updatedItem;
+      }
+    });
+  }
+
+  Future<void> _pickTime(ScheduleItem item, bool isOnTime) async {
+    final selectedMinutes = isOnTime ? item.onMinutes : item.offMinutes;
+
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: selectedMinutes ~/ 60,
+        minute: selectedMinutes % 60,
+      ),
+    );
+
+    if (picked == null) {
+      return;
+    }
+
+    _updateSchedule(
+      item.copyWith(
+        onMinutes: isOnTime ? picked.hour * 60 + picked.minute : null,
+        offMinutes: isOnTime ? null : picked.hour * 60 + picked.minute,
+      ),
+    );
+  }
+
+  void _toggleDay(ScheduleItem item, int dayIndex) {
+    final bit = 1 << dayIndex;
+    final updatedMask = item.daysMask ^ bit;
+
+    _updateSchedule(item.copyWith(daysMask: updatedMask));
+  }
+
+  void _save() {
+    for (final item in _items) {
+      if (!item.enabled) {
+        continue;
+      }
+
+      if (!item.hasAnyDaySelected) {
+        _showMessage('${item.label}: select at least one day.');
+        return;
+      }
+
+      if (item.onMinutes == item.offMinutes) {
+        _showMessage('${item.label}: ON and OFF time cannot be the same.');
+        return;
+      }
+    }
+
+    Navigator.pop(context, _items);
+  }
+
+  void _showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
+    if (!mounted) return;
+    AppNotice.show(context, message, type: type);
+  }
+
+  String _formatTime(BuildContext context, int minutes) {
+    return TimeOfDay(
+      hour: minutes ~/ 60,
+      minute: minutes % 60,
+    ).format(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: MediaQuery.sizeOf(context).height * 0.88,
+        padding: EdgeInsets.fromLTRB(20, 18, 20, 18 + bottomInset),
+        decoration: BoxDecoration(
+          color: AppTheme.background,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              height: 5,
+              width: 48,
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Weekly Schedules',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                          color: AppTheme.darkText,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        'Choose ON/OFF time and repeat days',
+                        style: TextStyle(color: AppTheme.lightText),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Expanded(
+              child: _items.isEmpty
+                  ? _EmptyScheduleState(onAdd: _addSchedule)
+                  : ListView.separated(
+                physics: const BouncingScrollPhysics(),
+                itemCount: _items.length,
+                separatorBuilder: (_, __) =>
+                const SizedBox(height: 14),
+                itemBuilder: (context, index) {
+                  final item = _items[index];
+
+                  return _ScheduleEditorCard(
+                    item: item,
+                    formatTime: _formatTime,
+                    onToggleEnabled: (enabled) {
+                      _updateSchedule(item.copyWith(enabled: enabled));
+                    },
+                    onPickOnTime: () => _pickTime(item, true),
+                    onPickOffTime: () => _pickTime(item, false),
+                    onToggleDay: (dayIndex) => _toggleDay(item, dayIndex),
+                    onDelete: () => _removeSchedule(item.id),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 14),
+            if (_items.length < _maxSchedules)
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: _addSchedule,
+                  icon: const Icon(Icons.add_rounded),
+                  label: Text('Add Schedule (${_items.length}/$_maxSchedules)'),
+                ),
+              ),
+            if (_items.length < _maxSchedules) const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: FilledButton.icon(
+                onPressed: _save,
+                icon: const Icon(Icons.save_rounded),
+                label: const Text('Save Schedules'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyScheduleState extends StatelessWidget {
+  final VoidCallback onAdd;
+
+  const _EmptyScheduleState({required this.onAdd});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: AppTheme.card,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.calendar_month_outlined,
+              size: 54,
+              color: AppTheme.primary,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'No schedules yet',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Add a recurring weekly schedule. It keeps working locally after WiFi disconnects.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppTheme.lightText),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Add First Schedule'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScheduleEditorCard extends StatelessWidget {
+  final ScheduleItem item;
+  final String Function(BuildContext context, int minutes) formatTime;
+  final ValueChanged<bool> onToggleEnabled;
+  final VoidCallback onPickOnTime;
+  final VoidCallback onPickOffTime;
+  final ValueChanged<int> onToggleDay;
+  final VoidCallback onDelete;
+
+  const _ScheduleEditorCard({
+    required this.item,
+    required this.formatTime,
+    required this.onToggleEnabled,
+    required this.onPickOnTime,
+    required this.onPickOffTime,
+    required this.onToggleDay,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: item.enabled ? 1 : 0.62,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppTheme.card,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: item.enabled
+                ? Colors.blue.withOpacity(0.22)
+                : Colors.transparent,
+          ),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Container(
+                  height: 40,
+                  width: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    item.id.replaceFirst('s', ''),
+                    style: const TextStyle(
+                      color: Colors.blue,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    item.label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                Switch.adaptive(
+                  value: item.enabled,
+                  activeThumbColor: AppTheme.primary,
+                  onChanged: onToggleEnabled,
+                ),
+                IconButton(
+                  onPressed: onDelete,
+                  tooltip: 'Delete schedule',
+                  icon: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.redAccent,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onPickOnTime,
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: Text('ON ${formatTime(context, item.onMinutes)}'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onPickOffTime,
+                    icon: const Icon(Icons.stop_rounded),
+                    label: Text('OFF ${formatTime(context, item.offMinutes)}'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Repeat on',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: List.generate(ScheduleItem.dayShortNames.length, (index) {
+                final selected = item.isEnabledOnDayIndex(index);
+
+                return ChoiceChip(
+                  label: Text(ScheduleItem.dayShortNames[index]),
+                  selected: selected,
+                  onSelected: (_) => onToggleDay(index),
+                  selectedColor: AppTheme.primary.withOpacity(0.16),
+                  labelStyle: TextStyle(
+                    fontSize: 11,
+                    color: selected ? AppTheme.primary : AppTheme.lightText,
+                    fontWeight: FontWeight.w800,
+                  ),
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =====================================================
 class _PowerCard extends StatelessWidget {
   final bool online;
   final bool state;

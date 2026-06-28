@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
 import '../devices/dashboard_screen.dart';
+import '../settings/app_settings_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -17,7 +18,7 @@ class _HomeShellState extends State<HomeShell> {
     DashboardScreen(),
     Center(child: Text('Add Device')),
     Center(child: Text('Automation')),
-    Center(child: Text('Settings')),
+    AppSettingsScreen(),
   ];
 
   @override

@@ -5,6 +5,7 @@ import '../../models/device_model.dart';
 import '../../services/app_ticker.dart';
 import '../../services/device_service.dart';
 import 'add_device_screen.dart';
+import 'archived_devices_screen.dart';
 import 'device_control_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -32,22 +33,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final onlineCount = devices.where((d) => d.isOnline).length;
                 final activeTimers =
                     devices.where((d) => d.timers['ch1']?.enabled == true).length;
-                final activeSchedules = devices
-                    .where((d) => d.schedules['ch1']?.enabled == true)
-                    .length;
+                final activeSchedules = devices.fold<int>(
+                  0,
+                      (count, device) =>
+                  count + (device.schedules['ch1']?.activeCount ?? 0),
+                );
 
                 return Padding(
                   padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Easy Home Control',
-                        style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.w900,
-                          color: AppTheme.darkText,
-                        ),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Easy Home Control',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w900,
+                                color: AppTheme.darkText,
+                              ),
+                            ),
+                          ),
+                          Material(
+                            color: AppTheme.card,
+                            borderRadius: BorderRadius.circular(16),
+                            child: IconButton(
+                              tooltip: 'Archived devices',
+                              icon: const Icon(Icons.inventory_2_outlined),
+                              color: AppTheme.primary,
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const ArchivedDevicesScreen(),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       Text(
@@ -107,6 +133,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   MaterialPageRoute(
                                     builder: (_) => DeviceControlScreen(
                                       deviceId: device.id,
+                                      deviceName: device.nickname,
                                     ),
                                   ),
                                 );
@@ -275,7 +302,8 @@ class _DeviceCard extends StatelessWidget {
     final switchOn = ch1?.state == true;
     final online = device.isOnline;
     final timerActive = timer?.enabled == true;
-    final scheduleActive = schedule?.enabled == true;
+    final scheduleCount = schedule?.activeCount ?? 0;
+    final scheduleActive = scheduleCount > 0;
 
     final statusColor = !online
         ? Colors.grey
@@ -385,8 +413,8 @@ class _DeviceCard extends StatelessWidget {
                           color: Colors.orange,
                         ),
                       if (scheduleActive)
-                        const _DeviceBadge(
-                          label: 'Schedule',
+                        _DeviceBadge(
+                          label: '$scheduleCount schedule${scheduleCount == 1 ? '' : 's'}',
                           icon: Icons.schedule_rounded,
                           color: Colors.blue,
                         ),

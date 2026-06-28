@@ -1,8 +1,11 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
-import '../home/home_shell.dart';
+import '../../services/auth_service.dart';
+import 'account_protection_screen.dart';
+import 'phone_auth_mode.dart';
+import 'phone_auth_screen.dart';
 import 'widgets/auth_header.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -13,6 +16,7 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  final _authService = AuthService();
   final nameController = TextEditingController();
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
@@ -31,47 +35,67 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<void> createAccount() async {
     final name = nameController.text.trim();
     final email = emailController.text.trim();
-    final password = passwordController.text.trim();
+    final password = passwordController.text;
 
     if (name.isEmpty || email.isEmpty || password.isEmpty) {
-      showMessage('Please fill all fields');
+      showMessage('Complete all fields to create your account.', type: AppNoticeType.warning);
       return;
     }
 
     if (password.length < 6) {
-      showMessage('Password must be at least 6 characters');
+      showMessage('Choose a password with at least 6 characters.', type: AppNoticeType.warning);
       return;
     }
 
     setState(() => isLoading = true);
 
     try {
-      final credential =
-      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      final credential = await _authService.register(
         email: email,
         password: password,
       );
 
       await credential.user?.updateDisplayName(name);
 
+      // Email verification is optional for entering the app, but we send it
+      // immediately so the user can confirm the recovery method later.
+      try {
+        await _authService.sendEmailVerification();
+      } catch (_) {
+        // The Account Protection screen provides a safe resend option.
+      }
+
       if (!mounted) return;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeShell()),
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => const AccountProtectionScreen(
+            source: AccountProtectionSource.emailSignUp,
+          ),
+        ),
+            (route) => false,
       );
-    } on FirebaseAuthException catch (e) {
-      showMessage(e.message ?? 'Registration failed');
-    } catch (_) {
-      showMessage('Something went wrong');
+    } catch (error) {
+      showMessage(
+        _authService.friendlyAuthError(error, scope: AuthErrorScope.email),
+        type: AppNoticeType.error,
+      );
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
-
-    if (mounted) setState(() => isLoading = false);
   }
 
-  void showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+  void showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
+    if (!mounted) return;
+    AppNotice.show(context, message, type: type);
+  }
+
+  Future<void> _openPhoneRegister() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const PhoneAuthScreen(mode: PhoneAuthMode.signIn),
+      ),
     );
   }
 
@@ -92,16 +116,48 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
               ),
-
               const SizedBox(height: 12),
-
               const AuthHeader(
                 title: 'Create Account',
                 subtitle: 'Securely connect and manage your smart home devices.',
               ),
-
-              const SizedBox(height: 36),
-
+              const SizedBox(height: 28),
+              OutlinedButton.icon(
+                onPressed: isLoading ? null : _openPhoneRegister,
+                icon: const Icon(Icons.phone_android_rounded),
+                label: const Text(
+                  'Create Account with Mobile Number',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  foregroundColor: AppTheme.primaryDark,
+                  side: BorderSide(
+                    color: AppTheme.primary.withValues(alpha: 0.35),
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  const Expanded(child: Divider()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Text(
+                      'or use email',
+                      style: TextStyle(
+                        color: AppTheme.lightText.withValues(alpha: 0.9),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  const Expanded(child: Divider()),
+                ],
+              ),
+              const SizedBox(height: 24),
               TextField(
                 controller: nameController,
                 textCapitalization: TextCapitalization.words,
@@ -110,9 +166,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   prefixIcon: Icon(Icons.person_outline),
                 ),
               ),
-
               const SizedBox(height: 16),
-
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -121,9 +175,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   prefixIcon: Icon(Icons.email_outlined),
                 ),
               ),
-
               const SizedBox(height: 16),
-
               TextField(
                 controller: passwordController,
                 obscureText: hidePassword,
@@ -142,9 +194,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 26),
-
               SizedBox(
                 height: 58,
                 child: FilledButton(
@@ -156,7 +206,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                       : const Text(
-                    'Create Account',
+                    'Create Account with Email',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,

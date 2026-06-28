@@ -1,5 +1,7 @@
 import 'dart:async';
 
+/// A local UI refresh only. It does not make Firebase requests.
+/// Firebase device data still arrives through Realtime Database streams.
 class AppTicker {
   AppTicker._internal();
 
@@ -20,7 +22,8 @@ class AppTicker {
 
     _controller.add(DateTime.now());
 
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+    // Only refreshes labels such as "12 sec ago". It does not read Firebase.
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!_controller.isClosed) {
         _controller.add(DateTime.now());
       }
