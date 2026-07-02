@@ -110,101 +110,30 @@ class DeviceService {
     return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
+  /// Active devices shown on the dashboard.
+  ///
+  /// Phase 5A-2 security-read preparation:
+  /// 1. Read the current user's own device mapping at /users/{uid}/devices.
+  /// 2. Subscribe only to each mapped device at /devices/{deviceId}.
+  ///
+  /// This intentionally never listens to the complete /devices tree. Keeping
+  /// reads at individual device paths prepares the app for per-device RTDB
+  /// rules later, without changing the stable ESP command/timer/schedule
+  /// database contract today.
   Stream<List<DeviceModel>> listenAllDevices() {
-    final uid = currentUid;
-
-    if (uid == null) {
-      return Stream.value(<DeviceModel>[]);
-    }
-
-    final controller = StreamController<List<DeviceModel>>.broadcast();
-
-    StreamSubscription<DatabaseEvent>? userDeviceSub;
-    StreamSubscription<DatabaseEvent>? allDevicesSub;
-
-    userDeviceSub = _usersRef.child(uid).child('devices').onValue.listen(
-          (userEvent) {
-        final allowedDeviceIds = <String>{};
-        final nicknames = <String, String>{};
-        final userDeviceValue = userEvent.snapshot.value;
-
-        if (userDeviceValue is Map) {
-          final userDevices = Map<dynamic, dynamic>.from(userDeviceValue);
-
-          userDevices.forEach((deviceId, value) {
-            final id = deviceId.toString();
-
-            if (value is Map) {
-              final deviceInfo = Map<dynamic, dynamic>.from(value);
-              final active = deviceInfo['active'] != false;
-
-              if (active) {
-                allowedDeviceIds.add(id);
-                nicknames[id] =
-                    deviceInfo['nickname']?.toString() ?? 'Smart Switch';
-              }
-            } else if (value == true) {
-              allowedDeviceIds.add(id);
-              nicknames[id] = 'Smart Switch';
-            }
-          });
-        }
-
-        allDevicesSub?.cancel();
-
-        if (allowedDeviceIds.isEmpty) {
-          controller.add(<DeviceModel>[]);
-          return;
-        }
-
-        allDevicesSub = _devicesRef.onValue.listen(
-              (devicesEvent) {
-            final devicesValue = devicesEvent.snapshot.value;
-
-            if (devicesValue == null || devicesValue is! Map) {
-              controller.add(<DeviceModel>[]);
-              return;
-            }
-
-            final rawDevices = Map<dynamic, dynamic>.from(devicesValue);
-            final devices = <DeviceModel>[];
-
-            rawDevices.forEach((deviceId, deviceData) {
-              final id = deviceId.toString();
-
-              if (!allowedDeviceIds.contains(id) || deviceData is! Map) {
-                return;
-              }
-
-              devices.add(
-                DeviceModel.fromMap(
-                  id,
-                  Map<dynamic, dynamic>.from(deviceData),
-                  nickname: nicknames[id],
-                ),
-              );
-            });
-
-            devices.sort((a, b) => a.nickname.compareTo(b.nickname));
-            controller.add(devices);
-          },
-          onError: controller.addError,
-        );
-      },
-      onError: controller.addError,
-    );
-
-    controller.onCancel = () async {
-      await userDeviceSub?.cancel();
-      await allDevicesSub?.cancel();
-    };
-
-    return controller.stream;
+    return _listenMappedDevices(includeActive: true);
   }
 
-  /// Lists device shortcuts that the current user removed from the dashboard.
-  /// They remain linked to the account and can be restored safely.
+  /// Archived devices remain linked to the current account, but use the same
+  /// least-read pattern as active devices: mapping first, then individual
+  /// device subscriptions only.
   Stream<List<DeviceModel>> listenArchivedDevices() {
+    return _listenMappedDevices(includeActive: false);
+  }
+
+  Stream<List<DeviceModel>> _listenMappedDevices({
+    required bool includeActive,
+  }) {
     final uid = currentUid;
 
     if (uid == null) {
@@ -212,87 +141,182 @@ class DeviceService {
     }
 
     final controller = StreamController<List<DeviceModel>>.broadcast();
+    StreamSubscription<DatabaseEvent>? userDeviceSubscription;
+    final deviceSubscriptions = <String, StreamSubscription<DatabaseEvent>>{};
+    final deviceDataById = <String, Map<dynamic, dynamic>>{};
+    var nicknamesById = <String, String>{};
+    var cancelled = false;
 
-    StreamSubscription<DatabaseEvent>? userDeviceSub;
-    StreamSubscription<DatabaseEvent>? allDevicesSub;
+    void emitError(Object error, StackTrace stackTrace) {
+      if (!cancelled && !controller.isClosed) {
+        controller.addError(error, stackTrace);
+      }
+    }
 
-    userDeviceSub = _usersRef.child(uid).child('devices').onValue.listen(
-          (userEvent) {
-        final archivedDeviceIds = <String>{};
-        final nicknames = <String, String>{};
-        final userDeviceValue = userEvent.snapshot.value;
+    void emitDevices() {
+      if (cancelled || controller.isClosed) {
+        return;
+      }
 
-        if (userDeviceValue is Map) {
-          final userDevices = Map<dynamic, dynamic>.from(userDeviceValue);
+      final devices = <DeviceModel>[];
 
-          userDevices.forEach((deviceId, value) {
-            final id = deviceId.toString();
+      for (final entry in nicknamesById.entries) {
+        final deviceData = deviceDataById[entry.key];
 
-            if (value is Map) {
-              final deviceInfo = Map<dynamic, dynamic>.from(value);
-              final active = deviceInfo['active'] != false;
-
-              if (!active) {
-                archivedDeviceIds.add(id);
-                nicknames[id] =
-                    deviceInfo['nickname']?.toString() ?? 'Smart Switch';
-              }
-            }
-          });
+        // A mapped device can be offline or temporarily unavailable in the
+        // database. Do not remove its user mapping; just wait for its own
+        // individual listener to provide data again.
+        if (deviceData == null) {
+          continue;
         }
 
-        allDevicesSub?.cancel();
+        devices.add(
+          DeviceModel.fromMap(
+            entry.key,
+            deviceData,
+            nickname: entry.value,
+          ),
+        );
+      }
 
-        if (archivedDeviceIds.isEmpty) {
-          controller.add(<DeviceModel>[]);
+      devices.sort((left, right) => left.nickname.compareTo(right.nickname));
+      controller.add(devices);
+    }
+
+    Map<String, String> parseRelevantDeviceMappings(dynamic value) {
+      final result = <String, String>{};
+
+      if (value is! Map) {
+        return result;
+      }
+
+      final mappings = Map<dynamic, dynamic>.from(value);
+
+      mappings.forEach((deviceId, mappingValue) {
+        final id = deviceId.toString().trim();
+
+        if (id.isEmpty) {
           return;
         }
 
-        allDevicesSub = _devicesRef.onValue.listen(
-              (devicesEvent) {
-            final devicesValue = devicesEvent.snapshot.value;
+        // Legacy mapping format: /users/{uid}/devices/{deviceId} = true.
+        // It represents an active device and remains supported.
+        if (mappingValue == true) {
+          if (includeActive) {
+            result[id] = 'Smart Switch';
+          }
+          return;
+        }
 
-            if (devicesValue == null || devicesValue is! Map) {
-              controller.add(<DeviceModel>[]);
-              return;
-            }
+        if (mappingValue is! Map) {
+          return;
+        }
 
-            final rawDevices = Map<dynamic, dynamic>.from(devicesValue);
-            final devices = <DeviceModel>[];
+        final mapping = Map<dynamic, dynamic>.from(mappingValue);
+        final isActive = mapping['active'] != false;
 
-            rawDevices.forEach((deviceId, deviceData) {
-              final id = deviceId.toString();
+        if (isActive != includeActive) {
+          return;
+        }
 
-              if (!archivedDeviceIds.contains(id) || deviceData is! Map) {
-                return;
-              }
+        final nickname = mapping['nickname']?.toString().trim();
+        result[id] = (nickname == null || nickname.isEmpty)
+            ? 'Smart Switch'
+            : nickname;
+      });
 
-              devices.add(
-                DeviceModel.fromMap(
-                  id,
-                  Map<dynamic, dynamic>.from(deviceData),
-                  nickname: nicknames[id],
-                ),
-              );
-            });
+      return result;
+    }
 
-            devices.sort((a, b) => a.nickname.compareTo(b.nickname));
-            controller.add(devices);
-          },
-          onError: controller.addError,
-        );
+    void startDeviceSubscription(String deviceId) {
+      if (deviceSubscriptions.containsKey(deviceId) || cancelled) {
+        return;
+      }
+
+      final subscription = _devicesRef.child(deviceId).onValue.listen(
+            (deviceEvent) {
+          // A stale callback may arrive just after an archive/restore mapping
+          // update. Ignore it unless this device is still in the current view.
+          if (cancelled || !nicknamesById.containsKey(deviceId)) {
+            return;
+          }
+
+          final value = deviceEvent.snapshot.value;
+
+          if (value is Map) {
+            deviceDataById[deviceId] = Map<dynamic, dynamic>.from(value);
+          } else {
+            deviceDataById.remove(deviceId);
+          }
+
+          emitDevices();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          emitError(error, stackTrace);
+        },
+      );
+
+      deviceSubscriptions[deviceId] = subscription;
+    }
+
+    void applyMappings(dynamic value) {
+      if (cancelled) {
+        return;
+      }
+
+      final nextNicknames = parseRelevantDeviceMappings(value);
+      final existingIds = deviceSubscriptions.keys.toSet();
+      final nextIds = nextNicknames.keys.toSet();
+
+      // Stop only removed device listeners. Existing device listeners stay
+      // alive, so a rename or archive-state change does not resubscribe to the
+      // full database or interrupt other devices.
+      for (final deviceId in existingIds.difference(nextIds)) {
+        final subscription = deviceSubscriptions.remove(deviceId);
+        if (subscription != null) {
+          unawaited(subscription.cancel());
+        }
+        deviceDataById.remove(deviceId);
+      }
+
+      nicknamesById = nextNicknames;
+
+      for (final deviceId in nextIds.difference(existingIds)) {
+        startDeviceSubscription(deviceId);
+      }
+
+      // Immediately reflect archive/restore/rename mapping changes. Each
+      // device listener then fills or refreshes its own live data.
+      emitDevices();
+    }
+
+    userDeviceSubscription = _usersRef.child(uid).child('devices').onValue.listen(
+          (userEvent) {
+        applyMappings(userEvent.snapshot.value);
       },
-      onError: controller.addError,
+      onError: (Object error, StackTrace stackTrace) {
+        emitError(error, stackTrace);
+      },
     );
 
     controller.onCancel = () async {
-      await userDeviceSub?.cancel();
-      await allDevicesSub?.cancel();
+      cancelled = true;
+
+      await userDeviceSubscription?.cancel();
+      await Future.wait(
+        deviceSubscriptions.values.map((subscription) => subscription.cancel()),
+      );
+
+      deviceSubscriptions.clear();
+      deviceDataById.clear();
+      nicknamesById = <String, String>{};
     };
 
     return controller.stream;
   }
 
+  /// Single-device listener used by control, WiFi-setup, and settings screens.
+  /// It already listens to one exact device path and never reads /devices.
   Stream<DeviceModel?> listenDevice(String deviceId) {
     final normalizedDeviceId = _normalizeDeviceId(deviceId);
 

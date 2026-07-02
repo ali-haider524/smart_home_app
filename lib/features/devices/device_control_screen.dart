@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_notice.dart';
@@ -9,6 +11,12 @@ import '../../services/device_service.dart';
 import 'device_settings_screen.dart';
 import 'wifi_setup_screen.dart';
 
+/// Phase 6B refreshes only the Device Control presentation layer.
+///
+/// The stable Firebase/ESP contract remains unchanged:
+/// - Flutter writes the command path only.
+/// - ESP reports the real relay state.
+/// - A power command is confirmed only after the ESP reports /state.
 class DeviceControlScreen extends StatefulWidget {
   final String deviceId;
   final String deviceName;
@@ -33,17 +41,26 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
   int? selectedTimerMinutes;
   String? selectedTimerLabel;
 
+  // Cloud control is intentionally confirmed only from the ESP-reported
+  // /state value. The app never flips the UI optimistically.
+  static const Duration _commandConfirmationTimeout = Duration(seconds: 8);
+  Timer? _commandConfirmationTimer;
+  bool _commandPending = false;
+  bool? _requestedRelayState;
+  int _commandAttempt = 0;
+  bool _confirmationCheckQueued = false;
+
   final List<_TimerOption> timerOptions = const [
-    _TimerOption('1 hour', 60),
-    _TimerOption('2 hours', 120),
-    _TimerOption('3 hours', 180),
-    _TimerOption('4 hours', 240),
-    _TimerOption('5 hours', 300),
-    _TimerOption('6 hours', 360),
-    _TimerOption('7 hours', 420),
-    _TimerOption('8 hours', 480),
-    _TimerOption('9 hours', 540),
-    _TimerOption('10 hours', 600),
+    _TimerOption('1 hour', '1h', 60),
+    _TimerOption('2 hours', '2h', 120),
+    _TimerOption('3 hours', '3h', 180),
+    _TimerOption('4 hours', '4h', 240),
+    _TimerOption('5 hours', '5h', 300),
+    _TimerOption('6 hours', '6h', 360),
+    _TimerOption('7 hours', '7h', 420),
+    _TimerOption('8 hours', '8h', 480),
+    _TimerOption('9 hours', '9h', 540),
+    _TimerOption('10 hours', '10h', 600),
   ];
 
   @override
@@ -56,8 +73,107 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
 
   @override
   void dispose() {
+    _commandConfirmationTimer?.cancel();
     customTimerController.dispose();
     super.dispose();
+  }
+
+  Future<void> _sendPowerCommand(bool currentState) async {
+    if (_commandPending) {
+      return;
+    }
+
+    final requestedState = !currentState;
+    final attempt = ++_commandAttempt;
+
+    setState(() {
+      _commandPending = true;
+      _requestedRelayState = requestedState;
+    });
+
+    try {
+      await deviceService.setChannelState(
+        deviceId: widget.deviceId,
+        channelId: channelId,
+        state: requestedState,
+      );
+
+      // A very fast device callback can confirm the state before this write
+      // Future returns. In that case, do not start a stale timeout.
+      if (!mounted || attempt != _commandAttempt || !_commandPending) {
+        return;
+      }
+
+      _commandConfirmationTimer?.cancel();
+      _commandConfirmationTimer = Timer(
+        _commandConfirmationTimeout,
+            () {
+          if (!mounted || attempt != _commandAttempt || !_commandPending) {
+            return;
+          }
+
+          _clearPendingPowerCommand();
+          showMessage(
+            'Device did not confirm the command. Check its connection and try again.',
+            type: AppNoticeType.error,
+          );
+        },
+      );
+    } catch (_) {
+      if (!mounted || attempt != _commandAttempt) {
+        return;
+      }
+
+      _clearPendingPowerCommand();
+      showMessage(
+        'Could not send the command. Check your internet connection and try again.',
+        type: AppNoticeType.error,
+      );
+    }
+  }
+
+  void _queuePowerConfirmation(bool actualState) {
+    if (!_commandPending ||
+        _requestedRelayState != actualState ||
+        _confirmationCheckQueued) {
+      return;
+    }
+
+    _confirmationCheckQueued = true;
+
+    // The latest device state arrives inside a StreamBuilder. Delay the state
+    // update until after this build to avoid calling setState during build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _confirmationCheckQueued = false;
+
+      if (!mounted ||
+          !_commandPending ||
+          _requestedRelayState != actualState) {
+        return;
+      }
+
+      _clearPendingPowerCommand();
+      showMessage(
+        'Switch turned ${actualState ? 'ON' : 'OFF'}.',
+        type: AppNoticeType.success,
+      );
+    });
+  }
+
+  void _clearPendingPowerCommand() {
+    _commandConfirmationTimer?.cancel();
+    _commandConfirmationTimer = null;
+
+    if (!mounted) {
+      _commandPending = false;
+      _requestedRelayState = null;
+      return;
+    }
+
+    setState(() {
+      _commandPending = false;
+      _requestedRelayState = null;
+    });
   }
 
   Future<void> startRunTimer() async {
@@ -192,16 +308,42 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: Text(_deviceName),
         backgroundColor: AppTheme.background,
         elevation: 0,
+        titleSpacing: 4,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _deviceName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 19,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 1),
+            const Text(
+              'Smart switch control',
+              style: TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
         actions: [
-          IconButton(
-            tooltip: 'Device settings',
-            onPressed: openDeviceSettings,
-            icon: const Icon(Icons.settings_rounded),
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: _RoundActionButton(
+              tooltip: 'Device settings',
+              icon: Icons.settings_rounded,
+              onTap: openDeviceSettings,
+            ),
           ),
-          const SizedBox(width: 4),
         ],
       ),
       body: StreamBuilder<DeviceModel?>(
@@ -224,57 +366,46 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
               final status = ch1?.status ?? 'OFF';
               final online = device.isOnline;
 
-              final cardColor = !online
-                  ? Colors.grey
-                  : state
-                  ? Colors.green
-                  : AppTheme.primary;
+              _queuePowerConfirmation(state);
 
               return SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 34),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _PowerCard(
+                    _DeviceHeroCard(
+                      deviceName: _deviceName,
                       online: online,
                       state: state,
                       status: status,
-                      color: cardColor,
                       lastSeenText: device.lastSeenText,
-                      onTap: online
-                          ? () {
-                        deviceService.toggleChannel(
-                          deviceId: widget.deviceId,
-                          channelId: channelId,
-                          currentState: state,
-                        );
-                      }
+                      commandPending: _commandPending,
+                      requestedState: _requestedRelayState,
+                      onTap: online && !_commandPending
+                          ? () => _sendPowerCommand(state)
                           : null,
                     ),
-                    const SizedBox(height: 18),
-                    _StatusSummaryCard(
+                    const SizedBox(height: 14),
+                    _DeviceMetaStrip(
                       online: online,
                       lastSeenText: device.lastSeenText,
-                      firmwareVersion: device.firmwareVersion,
                       model: device.model,
                     ),
-                    const SizedBox(height: 26),
-                    const _SectionTitle(title: 'Quick Run Timer'),
+                    const SizedBox(height: 28),
+                    _SectionHeader(
+                      icon: Icons.timer_outlined,
+                      title: 'Quick timer',
+                      detail: timer?.enabled == true
+                          ? 'Timer currently running'
+                          : 'Set a one-time switch-off timer',
+                    ),
                     const SizedBox(height: 12),
-                    if (timer != null && timer.enabled)
-                      _ActiveInfoCard(
-                        icon: Icons.timer_rounded,
-                        title: 'Timer Active',
-                        value: timer.label.isEmpty
-                            ? '${timer.durationMinutes} min'
-                            : timer.label,
-                        subtitle:
-                        'Relay will turn ${timer.durationMinutes > 0 ? 'OFF after ${timer.durationMinutes} min' : 'OFF automatically'}',
-                        color: Colors.orange,
-                      ),
-                    if (timer != null && timer.enabled)
-                      const SizedBox(height: 12),
-                    _TimerSelectorCard(
+                    if (timer != null && timer.enabled) ...[
+                      _TimerRunningBanner(timerLabel: timer.label, durationMinutes: timer.durationMinutes),
+                      const SizedBox(height: 10),
+                    ],
+                    _TimerControlCard(
                       timerOptions: timerOptions,
                       selectedMinutes: selectedTimerMinutes,
                       customTimerController: customTimerController,
@@ -287,19 +418,25 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
                       onStart: startRunTimer,
                       onCancel: cancelRunTimer,
                     ),
-                    const SizedBox(height: 30),
-                    const _SectionTitle(title: 'Weekly Schedules'),
-                    const SizedBox(height: 14),
-                    _ScheduleOverviewCard(
-                      schedules: schedule?.orderedItems ?? const [],
-                      onManage: () {
-                        openScheduleManager(
-                          schedule?.orderedItems ?? const [],
-                        );
+                    const SizedBox(height: 28),
+                    _SectionHeader(
+                      icon: Icons.calendar_month_outlined,
+                      title: 'Automations',
+                      detail: 'Weekly schedules run on the device',
+                      actionLabel: 'Manage',
+                      onAction: () {
+                        openScheduleManager(schedule?.orderedItems ?? const []);
                       },
                     ),
-                    const SizedBox(height: 26),
-                    _DeviceInfoCard(device: device),
+                    const SizedBox(height: 12),
+                    _ScheduleSummaryCard(
+                      schedules: schedule?.orderedItems ?? const [],
+                      onManage: () {
+                        openScheduleManager(schedule?.orderedItems ?? const []);
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    _DeviceDetailsCard(device: device),
                   ],
                 ),
               );
@@ -313,69 +450,246 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
 
 class _TimerOption {
   final String label;
+  final String shortLabel;
   final int minutes;
 
-  const _TimerOption(this.label, this.minutes);
+  const _TimerOption(this.label, this.shortLabel, this.minutes);
 }
 
-class _ActiveInfoCard extends StatelessWidget {
+class _RoundActionButton extends StatelessWidget {
+  final String tooltip;
   final IconData icon;
-  final String title;
-  final String value;
-  final String subtitle;
-  final Color color;
+  final VoidCallback onTap;
 
-  const _ActiveInfoCard({
+  const _RoundActionButton({
+    required this.tooltip,
     required this.icon,
-    required this.title,
-    required this.value,
-    required this.subtitle,
-    required this.color,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: color.withOpacity(0.22)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            height: 48,
-            width: 48,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.14),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Icon(icon, color: color),
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(16),
+        elevation: 1,
+        shadowColor: Colors.black.withOpacity(0.08),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Icon(icon, color: AppTheme.primaryDark),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+}
+
+class _DeviceHeroCard extends StatelessWidget {
+  final String deviceName;
+  final bool online;
+  final bool state;
+  final String status;
+  final String lastSeenText;
+  final bool commandPending;
+  final bool? requestedState;
+  final VoidCallback? onTap;
+
+  const _DeviceHeroCard({
+    required this.deviceName,
+    required this.online,
+    required this.state,
+    required this.status,
+    required this.lastSeenText,
+    required this.commandPending,
+    required this.requestedState,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final stateColor = !online
+        ? Colors.blueGrey
+        : state
+        ? const Color(0xFF16A34A)
+        : AppTheme.primary;
+    final requestedLabel = requestedState == true ? 'ON' : 'OFF';
+    final statusTitle = !online
+        ? 'Device is offline'
+        : commandPending
+        ? 'Sending $requestedLabel command'
+        : state
+        ? 'Power is ON'
+        : 'Power is OFF';
+    final statusDetail = !online
+        ? 'Last seen $lastSeenText'
+        : commandPending
+        ? 'Waiting for the switch to confirm the relay state.'
+        : state
+        ? 'Tap the power button to switch it off.'
+        : 'Tap the power button to switch it on.';
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            stateColor,
+            Color.lerp(stateColor, AppTheme.primaryDark, 0.38)!,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: [
+          BoxShadow(
+            color: stateColor.withOpacity(0.23),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _HeroStatusChip(
+                      icon: online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                      label: online ? 'ONLINE' : 'OFFLINE',
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      deviceName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        height: 1.1,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      'Channel 1 • $status',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w900,
+              ),
+              const SizedBox(width: 14),
+              Semantics(
+                button: true,
+                enabled: onTap != null,
+                label: commandPending
+                    ? 'Sending $requestedLabel command'
+                    : state
+                    ? 'Turn switch off'
+                    : 'Turn switch on',
+                child: Material(
+                  color: Colors.white.withOpacity(0.15),
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    onTap: onTap,
+                    customBorder: const CircleBorder(),
+                    child: SizedBox(
+                      height: 98,
+                      width: 98,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            height: 82,
+                            width: 82,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.white.withOpacity(0.14),
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.25),
+                              ),
+                            ),
+                            child: Icon(
+                              Icons.power_settings_new_rounded,
+                              size: 42,
+                              color: Colors.white.withOpacity(onTap == null ? 0.55 : 1),
+                            ),
+                          ),
+                          if (commandPending)
+                            const SizedBox(
+                              height: 96,
+                              width: 96,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3.5,
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade700,
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.14),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white.withOpacity(0.12)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  commandPending
+                      ? Icons.sync_rounded
+                      : online
+                      ? (state ? Icons.lightbulb_rounded : Icons.power_rounded)
+                      : Icons.info_outline_rounded,
+                  color: Colors.white,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        statusTitle,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        statusDetail,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -387,47 +701,34 @@ class _ActiveInfoCard extends StatelessWidget {
   }
 }
 
-class _StatusSummaryCard extends StatelessWidget {
-  final bool online;
-  final String lastSeenText;
-  final String firmwareVersion;
-  final String model;
+class _HeroStatusChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
 
-  const _StatusSummaryCard({
-    required this.online,
-    required this.lastSeenText,
-    required this.firmwareVersion,
-    required this.model,
-  });
+  const _HeroStatusChip({required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
-    final color = online ? Colors.green : Colors.grey;
-
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(22),
+        color: Colors.white.withOpacity(0.16),
+        borderRadius: BorderRadius.circular(99),
+        border: Border.all(color: Colors.white.withOpacity(0.18)),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          _MiniStatusItem(
-            icon: Icons.wifi_rounded,
-            label: online ? 'Online' : 'Offline',
-            color: color,
-          ),
-          const SizedBox(width: 10),
-          _MiniStatusItem(
-            icon: Icons.history_rounded,
-            label: lastSeenText,
-            color: Colors.blueGrey,
-          ),
-          const SizedBox(width: 10),
-          _MiniStatusItem(
-            icon: Icons.memory_rounded,
-            label: model,
-            color: AppTheme.primary,
+          Icon(icon, size: 14, color: Colors.white),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.5,
+            ),
           ),
         ],
       ),
@@ -435,35 +736,105 @@ class _StatusSummaryCard extends StatelessWidget {
   }
 }
 
-class _MiniStatusItem extends StatelessWidget {
+class _DeviceMetaStrip extends StatelessWidget {
+  final bool online;
+  final String lastSeenText;
+  final String model;
+
+  const _DeviceMetaStrip({
+    required this.online,
+    required this.lastSeenText,
+    required this.model,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.035),
+            blurRadius: 14,
+            offset: const Offset(0, 7),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          _MetaCell(
+            icon: online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+            label: online ? 'Connection' : 'Status',
+            value: online ? 'Online' : 'Offline',
+            color: online ? const Color(0xFF16A34A) : Colors.blueGrey,
+          ),
+          const _MetaDivider(),
+          _MetaCell(
+            icon: Icons.history_rounded,
+            label: 'Last seen',
+            value: lastSeenText,
+            color: AppTheme.primary,
+          ),
+          const _MetaDivider(),
+          _MetaCell(
+            icon: Icons.memory_rounded,
+            label: 'Model',
+            value: model,
+            color: const Color(0xFF7C3AED),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetaCell extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String value;
   final Color color;
 
-  const _MiniStatusItem({
+  const _MetaCell({
     required this.icon,
     required this.label,
+    required this.value,
     required this.color,
   });
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.09),
-          borderRadius: BorderRadius.circular(16),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 20, color: color),
+            Icon(icon, color: color, size: 19),
             const SizedBox(height: 5),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 2),
             Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -472,7 +843,157 @@ class _MiniStatusItem extends StatelessWidget {
   }
 }
 
-class _TimerSelectorCard extends StatelessWidget {
+class _MetaDivider extends StatelessWidget {
+  const _MetaDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 42,
+      width: 1,
+      color: AppTheme.lightText.withOpacity(0.12),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String detail;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Container(
+          height: 38,
+          width: 38,
+          decoration: BoxDecoration(
+            color: AppTheme.primary.withOpacity(0.10),
+            borderRadius: BorderRadius.circular(13),
+          ),
+          child: Icon(icon, color: AppTheme.primaryDark, size: 20),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: AppTheme.darkText,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                detail,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppTheme.lightText,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (actionLabel != null && onAction != null)
+          TextButton(
+            onPressed: onAction,
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.primaryDark,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(
+              actionLabel!,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TimerRunningBanner extends StatelessWidget {
+  final String timerLabel;
+  final int durationMinutes;
+
+  const _TimerRunningBanner({
+    required this.timerLabel,
+    required this.durationMinutes,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final readableLabel = timerLabel.trim().isEmpty
+        ? '${durationMinutes > 0 ? durationMinutes : 0} min'
+        : timerLabel.trim();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.24)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            height: 34,
+            width: 34,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF59E0B).withOpacity(0.14),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.timer_rounded,
+              color: Color(0xFFD97706),
+              size: 19,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text.rich(
+              TextSpan(
+                style: const TextStyle(
+                  color: AppTheme.darkText,
+                  fontSize: 13,
+                  height: 1.25,
+                ),
+                children: [
+                  const TextSpan(text: 'Timer running • '),
+                  TextSpan(
+                    text: readableLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const TextSpan(text: '\nThe switch will turn off automatically.'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TimerControlCard extends StatelessWidget {
   final List<_TimerOption> timerOptions;
   final int? selectedMinutes;
   final TextEditingController customTimerController;
@@ -480,7 +1001,7 @@ class _TimerSelectorCard extends StatelessWidget {
   final VoidCallback onStart;
   final VoidCallback onCancel;
 
-  const _TimerSelectorCard({
+  const _TimerControlCard({
     required this.timerOptions,
     required this.selectedMinutes,
     required this.customTimerController,
@@ -491,42 +1012,54 @@ class _TimerSelectorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selectedOption = selectedMinutes == null
-        ? null
-        : timerOptions.firstWhere((e) => e.minutes == selectedMinutes);
-
     return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(24),
-      ),
+      padding: const EdgeInsets.all(16),
+      decoration: _softCardDecoration(),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DropdownButtonFormField<_TimerOption>(
-            value: selectedOption,
-            decoration: InputDecoration(
-              labelText: 'Select duration',
-              prefixIcon: const Icon(Icons.timer_rounded),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(18),
-              ),
+          const Text(
+            'Choose a duration',
+            style: TextStyle(
+              color: AppTheme.darkText,
+              fontWeight: FontWeight.w800,
             ),
-            items: timerOptions.map((option) {
-              return DropdownMenuItem<_TimerOption>(
-                value: option,
-                child: Text(option.label),
-              );
-            }).toList(),
-            onChanged: onChanged,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: timerOptions.map((option) {
+              final selected = option.minutes == selectedMinutes;
+
+              return ChoiceChip(
+                label: Text(option.shortLabel),
+                selected: selected,
+                showCheckmark: false,
+                onSelected: (_) => onChanged(selected ? null : option),
+                selectedColor: AppTheme.primary.withOpacity(0.16),
+                backgroundColor: AppTheme.background,
+                side: BorderSide(
+                  color: selected
+                      ? AppTheme.primary.withOpacity(0.35)
+                      : AppTheme.lightText.withOpacity(0.10),
+                ),
+                labelStyle: TextStyle(
+                  color: selected ? AppTheme.primaryDark : AppTheme.lightText,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              );
+            }).toList(growable: false),
+          ),
+          const SizedBox(height: 14),
           TextField(
             controller: customTimerController,
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
-              labelText: 'Custom minutes',
-              hintText: 'Example: 2, 3, 45',
+              labelText: 'Or enter custom minutes',
+              hintText: 'Example: 15, 45, 120',
               prefixIcon: const Icon(Icons.edit_calendar_rounded),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(18),
@@ -542,19 +1075,25 @@ class _TimerSelectorCard extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: onStart,
                     icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Start Timer'),
+                    label: const Text('Start timer'),
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: SizedBox(
-                  height: 50,
-                  child: OutlinedButton.icon(
-                    onPressed: onCancel,
-                    icon: const Icon(Icons.close_rounded),
-                    label: const Text('Cancel'),
+              const SizedBox(width: 10),
+              SizedBox(
+                height: 50,
+                child: OutlinedButton(
+                  onPressed: onCancel,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFB45309),
+                    side: BorderSide(
+                      color: const Color(0xFFF59E0B).withOpacity(0.42),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
                   ),
+                  child: const Text('Cancel'),
                 ),
               ),
             ],
@@ -565,11 +1104,11 @@ class _TimerSelectorCard extends StatelessWidget {
   }
 }
 
-class _ScheduleOverviewCard extends StatelessWidget {
+class _ScheduleSummaryCard extends StatelessWidget {
   final List<ScheduleItem> schedules;
   final VoidCallback onManage;
 
-  const _ScheduleOverviewCard({
+  const _ScheduleSummaryCard({
     required this.schedules,
     required this.onManage,
   });
@@ -580,94 +1119,43 @@ class _ScheduleOverviewCard extends StatelessWidget {
     schedules.where((item) => item.enabled).toList(growable: false);
 
     return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.045),
-            blurRadius: 18,
-            offset: const Offset(6, 10),
-          ),
-          BoxShadow(
-            color: Colors.white.withOpacity(0.9),
-            blurRadius: 14,
-            offset: const Offset(-5, -5),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.all(16),
+      decoration: _softCardDecoration(),
+      child: activeSchedules.isEmpty
+          ? _EmptyAutomationContent(onManage: onManage)
+          : Column(
         children: [
-          Row(
-            children: [
-              Container(
-                height: 44,
-                width: 44,
-                decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                child: const Icon(
-                  Icons.calendar_month_rounded,
-                  color: Colors.blue,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  activeSchedules.isEmpty
-                      ? 'No active schedules'
-                      : '${activeSchedules.length} active schedule${activeSchedules.length == 1 ? '' : 's'}',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: onManage,
-                child: const Text('Manage'),
-              ),
-            ],
+          ...activeSchedules.take(2).map(
+                (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: _ScheduleSummaryRow(item: item),
+            ),
           ),
-          const SizedBox(height: 14),
-          if (activeSchedules.isEmpty)
-            const Text(
-              'Create up to 6 recurring schedules and choose the days for each one.',
-              style: TextStyle(
-                fontSize: 13,
-                color: AppTheme.lightText,
-              ),
-            )
-          else
-            ...activeSchedules.take(3).map(
-                  (item) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _SchedulePreviewRow(item: item),
+          if (activeSchedules.length > 2)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '+${activeSchedules.length - 2} more schedule${activeSchedules.length == 3 ? '' : 's'}',
+                style: const TextStyle(
+                  color: AppTheme.primaryDark,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
-          if (activeSchedules.length > 3)
-            Text(
-              '+${activeSchedules.length - 3} more schedule${activeSchedules.length - 3 == 1 ? '' : 's'}',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.primary,
-              ),
-            ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           SizedBox(
             width: double.infinity,
-            height: 50,
             child: OutlinedButton.icon(
               onPressed: onManage,
-              icon: const Icon(Icons.edit_calendar_rounded),
-              label: Text(
-                activeSchedules.isEmpty
-                    ? 'Add Schedules'
-                    : 'Manage Schedules',
+              icon: const Icon(Icons.edit_calendar_rounded, size: 19),
+              label: const Text('Manage schedules'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.primaryDark,
+                side: BorderSide(color: AppTheme.primary.withOpacity(0.26)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(17),
+                ),
               ),
             ),
           ),
@@ -677,10 +1165,74 @@ class _ScheduleOverviewCard extends StatelessWidget {
   }
 }
 
-class _SchedulePreviewRow extends StatelessWidget {
+class _EmptyAutomationContent extends StatelessWidget {
+  final VoidCallback onManage;
+
+  const _EmptyAutomationContent({required this.onManage});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          height: 42,
+          width: 42,
+          decoration: BoxDecoration(
+            color: const Color(0xFF7C3AED).withOpacity(0.10),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: const Icon(
+            Icons.auto_awesome_rounded,
+            color: Color(0xFF7C3AED),
+            size: 21,
+          ),
+        ),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'No schedules yet',
+                style: TextStyle(
+                  color: AppTheme.darkText,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              SizedBox(height: 3),
+              Text(
+                'Automate power for selected days and times.',
+                style: TextStyle(
+                  color: AppTheme.lightText,
+                  fontSize: 12,
+                  height: 1.25,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton(
+          onPressed: onManage,
+          style: TextButton.styleFrom(
+            foregroundColor: AppTheme.primaryDark,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: Size.zero,
+          ),
+          child: const Text(
+            'Add',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ScheduleSummaryRow extends StatelessWidget {
   final ScheduleItem item;
 
-  const _SchedulePreviewRow({required this.item});
+  const _ScheduleSummaryRow({required this.item});
 
   String _time(BuildContext context, int minutes) {
     return TimeOfDay(
@@ -694,31 +1246,194 @@ class _SchedulePreviewRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.blue.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(15),
+        color: AppTheme.background,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         children: [
-          const Icon(Icons.schedule_rounded, size: 18, color: Colors.blue),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '${_time(context, item.onMinutes)} → ${_time(context, item.offMinutes)}',
-              style: const TextStyle(fontWeight: FontWeight.w800),
+          Container(
+            height: 32,
+            width: 32,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withOpacity(0.11),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.schedule_rounded,
+              color: AppTheme.primaryDark,
+              size: 18,
             ),
           ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.darkText,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  item.daysSummary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.lightText,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
           Text(
-            item.daysSummary,
+            '${_time(context, item.onMinutes)} – ${_time(context, item.offMinutes)}',
             style: const TextStyle(
+              color: AppTheme.primaryDark,
               fontSize: 11,
-              color: AppTheme.lightText,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w900,
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class _DeviceDetailsCard extends StatelessWidget {
+  final DeviceModel device;
+
+  const _DeviceDetailsCard({required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: _softCardShadowDecoration(),
+      child: Material(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(22),
+        clipBehavior: Clip.antiAlias,
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            leading: Container(
+              height: 38,
+              width: 38,
+              decoration: BoxDecoration(
+                color: Colors.blueGrey.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: const Icon(
+                Icons.info_outline_rounded,
+                color: Colors.blueGrey,
+                size: 21,
+              ),
+            ),
+            title: const Text(
+              'Device details',
+              style: TextStyle(
+                color: AppTheme.darkText,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            subtitle: const Text(
+              'Model, firmware and identification',
+              style: TextStyle(color: AppTheme.lightText, fontSize: 12),
+            ),
+            children: [
+              _DetailLine(label: 'Device ID', value: device.id),
+              _DetailLine(label: 'Model', value: device.model),
+              _DetailLine(label: 'Firmware', value: device.firmwareVersion),
+              _DetailLine(
+                label: 'Channels',
+                value:
+                '${device.channelCount} channel${device.channelCount == 1 ? '' : 's'}',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailLine extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DetailLine({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 78,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+BoxDecoration _softCardShadowDecoration() {
+  return BoxDecoration(
+    borderRadius: BorderRadius.circular(22),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withOpacity(0.035),
+        blurRadius: 14,
+        offset: const Offset(0, 7),
+      ),
+    ],
+  );
+}
+
+BoxDecoration _softCardDecoration() {
+  return BoxDecoration(
+    color: AppTheme.card,
+    borderRadius: BorderRadius.circular(22),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withOpacity(0.035),
+        blurRadius: 14,
+        offset: const Offset(0, 7),
+      ),
+    ],
+  );
 }
 
 class _ScheduleManagerSheet extends StatefulWidget {
@@ -1144,133 +1859,3 @@ class _ScheduleEditorCard extends StatelessWidget {
   }
 }
 
-// =====================================================
-class _PowerCard extends StatelessWidget {
-  final bool online;
-  final bool state;
-  final String status;
-  final Color color;
-  final String lastSeenText;
-  final VoidCallback? onTap;
-
-  const _PowerCard({
-    required this.online,
-    required this.state,
-    required this.status,
-    required this.color,
-    required this.lastSeenText,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final active = online && state;
-
-    return Container(
-      padding: const EdgeInsets.all(26),
-      decoration: BoxDecoration(
-        color: active ? Colors.green : AppTheme.card,
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(0.18),
-            blurRadius: 26,
-            offset: const Offset(0, 14),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(100),
-            onTap: onTap,
-            child: Container(
-              height: 116,
-              width: 116,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color:
-                active ? Colors.white.withOpacity(0.18) : color.withOpacity(0.10),
-              ),
-              child: Icon(
-                Icons.power_settings_new_rounded,
-                size: 70,
-                color: active ? Colors.white : color,
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            state ? 'Switch is ON' : 'Switch is OFF',
-            style: TextStyle(
-              fontSize: 25,
-              fontWeight: FontWeight.w900,
-              color: active ? Colors.white : Colors.black,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            online ? 'Device Online • Status: $status' : 'Device Offline',
-            style: TextStyle(
-              color: active ? Colors.white70 : Colors.black54,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Last seen: $lastSeenText',
-            style: TextStyle(
-              fontSize: 12,
-              color: active ? Colors.white70 : Colors.black45,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DeviceInfoCard extends StatelessWidget {
-  final DeviceModel device;
-
-  const _DeviceInfoCard({required this.device});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Device Info',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          Text('Device ID: ${device.id}'),
-          Text('Model: ${device.model}'),
-          Text('Firmware: ${device.firmwareVersion}'),
-          Text('Channels: ${device.channelCount}'),
-          Text('Last Seen: ${device.lastSeenText}'),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionTitle extends StatelessWidget {
-  final String title;
-
-  const _SectionTitle({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      title,
-      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-    );
-  }
-}

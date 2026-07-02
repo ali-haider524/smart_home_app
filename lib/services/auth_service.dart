@@ -46,7 +46,8 @@ class AuthService {
       throw StateError('Please sign in again before verifying your email.');
     }
 
-    if (!hasEmailPasswordProvider(user) || (user.email?.trim().isEmpty ?? true)) {
+    if (!hasEmailPasswordProvider(user) ||
+        (user.email?.trim().isEmpty ?? true)) {
       throw StateError('Add a recovery email before requesting verification.');
     }
 
@@ -91,7 +92,8 @@ class AuthService {
 
   Future<void> requestPhoneVerification({
     required String phoneNumber,
-    required void Function(PhoneAuthCredential credential) verificationCompleted,
+    required void Function(PhoneAuthCredential credential)
+    verificationCompleted,
     required void Function(FirebaseAuthException error) verificationFailed,
     required void Function(String verificationId, int? resendToken) codeSent,
     required void Function(String verificationId) codeAutoRetrievalTimeout,
@@ -144,10 +146,13 @@ class AuthService {
 
   bool userHasProvider(User? user, String providerId) {
     if (user == null) return false;
-    return user.providerData.any((provider) => provider.providerId == providerId);
+    return user.providerData.any(
+          (provider) => provider.providerId == providerId,
+    );
   }
 
-  bool hasEmailPasswordProvider(User? user) => userHasProvider(user, 'password');
+  bool hasEmailPasswordProvider(User? user) =>
+      userHasProvider(user, 'password');
 
   bool hasPhoneProvider(User? user) => userHasProvider(user, 'phone');
 
@@ -156,7 +161,8 @@ class AuthService {
         AuthErrorScope scope = AuthErrorScope.general,
       }) {
     if (error is ArgumentError) {
-      return error.message?.toString() ?? 'Please check the information and try again.';
+      return error.message?.toString() ??
+          'Please check the information and try again.';
     }
 
     if (error is StateError) {
@@ -164,7 +170,7 @@ class AuthService {
     }
 
     if (error is! FirebaseAuthException) {
-      return 'Something went wrong. Please try again.';
+      return _genericFailureMessage(scope);
     }
 
     switch (error.code) {
@@ -177,14 +183,17 @@ class AuthService {
       case 'session-expired':
         return 'This OTP has expired. Request a new code.';
       case 'invalid-verification-code':
-        return 'The OTP is incorrect. Please check the code and try again.';
+      case 'invalid-verification-id':
+      case 'missing-verification-code':
+        return 'The OTP is incorrect or expired. Request a new code and try again.';
       case 'credential-already-in-use':
       case 'account-exists-with-different-credential':
         return _alreadyRegisteredMessage(scope);
       case 'provider-already-linked':
         return _alreadyLinkedMessage(scope);
       case 'email-already-in-use':
-        return 'This email is already registered with another account. Please sign in with that email or use a different email.';
+        return 'This email is already registered with another account. '
+            'Please sign in with that email or use a different email.';
       case 'weak-password':
         return 'Choose a stronger password with at least 6 characters.';
       case 'invalid-email':
@@ -193,7 +202,7 @@ class AuthService {
       case 'wrong-password':
       case 'invalid-credential':
         return scope == AuthErrorScope.phone
-            ? 'This mobile verification could not be completed. Request a new OTP and try again.'
+            ? 'Mobile verification could not be completed. Request a new OTP and try again.'
             : 'Email or password is incorrect.';
       case 'requires-recent-login':
         return 'Please sign in again before changing account security settings.';
@@ -201,18 +210,42 @@ class AuthService {
         return 'Internet connection failed. Please try again.';
       case 'operation-not-allowed':
         return 'This sign-in option is not enabled yet. Please contact support.';
+      case 'internal-error':
+      case 'unknown':
+      case 'app-not-authorized':
+      case 'captcha-check-failed':
+      case 'missing-client-identifier':
+      case 'app-not-verified':
+        return _genericFailureMessage(scope);
       default:
-        return error.message ?? 'Authentication failed. Please try again.';
+      // Do not expose raw Firebase developer messages, such as
+      // "internal error", to customers.
+        return _genericFailureMessage(scope);
+    }
+  }
+
+  String _genericFailureMessage(AuthErrorScope scope) {
+    switch (scope) {
+      case AuthErrorScope.phone:
+        return 'We could not start mobile verification. Check your mobile '
+            'number and internet connection, then try again.';
+      case AuthErrorScope.email:
+        return 'Email sign-in could not be completed. Check your details and '
+            'try again.';
+      case AuthErrorScope.general:
+        return 'Something went wrong. Please try again.';
     }
   }
 
   String _alreadyRegisteredMessage(AuthErrorScope scope) {
     if (scope == AuthErrorScope.phone) {
-      return 'This mobile number is already registered with another account. Sign in with that number or use a different mobile number.';
+      return 'This mobile number is already registered with another account. '
+          'Sign in with that number or use a different mobile number.';
     }
 
     if (scope == AuthErrorScope.email) {
-      return 'This email is already registered with another account. Sign in with that email or use a different email.';
+      return 'This email is already registered with another account. '
+          'Sign in with that email or use a different email.';
     }
 
     return 'This sign-in option is already registered with another account.';

@@ -35,7 +35,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   }
 
   void _goAfterPhoneSignIn(UserCredential credential) {
-    final isNewPhoneAccount = credential.additionalUserInfo?.isNewUser ?? false;
+    final isNewPhoneAccount =
+        credential.additionalUserInfo?.isNewUser ?? false;
 
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
@@ -49,7 +50,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     );
   }
 
-  Future<void> _completeWithCredential(PhoneAuthCredential credential) async {
+  Future<void> _completeWithCredential(
+      PhoneAuthCredential credential,
+      ) async {
     if (_completed) return;
     _completed = true;
 
@@ -72,7 +75,13 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     } catch (error) {
       _completed = false;
       if (mounted) {
-        _showMessage(_authService.friendlyAuthError(error, scope: AuthErrorScope.phone));
+        _showMessage(
+          _authService.friendlyAuthError(
+            error,
+            scope: AuthErrorScope.phone,
+          ),
+          type: AppNoticeType.error,
+        );
       }
     } finally {
       if (mounted) {
@@ -89,7 +98,13 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         _phoneController.text,
       );
     } catch (error) {
-      _showMessage(_authService.friendlyAuthError(error, scope: AuthErrorScope.phone));
+      _showMessage(
+        _authService.friendlyAuthError(
+          error,
+          scope: AuthErrorScope.phone,
+        ),
+        type: AppNoticeType.warning,
+      );
       return;
     }
 
@@ -102,7 +117,13 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         verificationFailed: (error) {
           if (!mounted) return;
           setState(() => _isSending = false);
-          _showMessage(_authService.friendlyAuthError(error, scope: AuthErrorScope.phone));
+          _showMessage(
+            _authService.friendlyAuthError(
+              error,
+              scope: AuthErrorScope.phone,
+            ),
+            type: AppNoticeType.error,
+          );
         },
         codeSent: (verificationId, resendToken) async {
           if (!mounted) return;
@@ -121,7 +142,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           );
 
           if (!mounted) return;
-          if (widget.mode == PhoneAuthMode.linkToCurrentAccount && linked == true) {
+          if (widget.mode == PhoneAuthMode.linkToCurrentAccount &&
+              linked == true) {
             Navigator.of(context).pop(true);
           }
         },
@@ -134,12 +156,21 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     } catch (error) {
       if (mounted) {
         setState(() => _isSending = false);
-        _showMessage(_authService.friendlyAuthError(error, scope: AuthErrorScope.phone));
+        _showMessage(
+          _authService.friendlyAuthError(
+            error,
+            scope: AuthErrorScope.phone,
+          ),
+          type: AppNoticeType.error,
+        );
       }
     }
   }
 
-  void _showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
+  void _showMessage(
+      String message, {
+        AppNoticeType type = AppNoticeType.info,
+      }) {
     if (!mounted) return;
     AppNotice.show(context, message, type: type);
   }
@@ -154,7 +185,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         backgroundColor: AppTheme.background,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(isLinking ? 'Add Mobile Number' : 'Continue with Mobile'),
+        title: Text(
+          isLinking ? 'Add Mobile Number' : 'Mobile Verification',
+        ),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -180,7 +213,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               Text(
                 isLinking
                     ? 'Verify your mobile number'
-                    : 'Login with mobile number',
+                    : 'Use mobile verification',
                 style: const TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 25,
@@ -191,7 +224,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               Text(
                 isLinking
                     ? 'After OTP verification, this number will be linked to your current Easy Home Control account.'
-                    : 'Use your Pakistani mobile number. We will send a one-time verification code.',
+                    : 'Use this option when you prefer a one-time code instead of email and password.',
                 style: const TextStyle(
                   color: AppTheme.lightText,
                   height: 1.45,
@@ -212,7 +245,10 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               const SizedBox(height: 10),
               const Text(
                 'Enter 0300 1234567, 3001234567, or +923001234567.',
-                style: TextStyle(color: AppTheme.lightText, fontSize: 12),
+                style: TextStyle(
+                  color: AppTheme.lightText,
+                  fontSize: 12,
+                ),
               ),
               const SizedBox(height: 24),
               SizedBox(
@@ -226,14 +262,28 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                       : Text(
-                    isLinking ? 'Send OTP to Verify' : 'Send OTP',
+                    isLinking
+                        ? 'Send OTP to Verify'
+                        : 'Send Verification Code',
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),
               ),
-              const SizedBox(height: 18),
+              if (!isLinking) ...[
+                const SizedBox(height: 14),
+                const Text(
+                  'Existing mobile accounts open after verification. New users can complete a mobile account, then add a recovery email later.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppTheme.lightText,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
               const Text(
-                'We will send an SMS code to verify this mobile number. Standard SMS charges may apply for real numbers.',
+                'By continuing, you agree to receive a verification SMS. Standard SMS charges may apply.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: AppTheme.lightText,

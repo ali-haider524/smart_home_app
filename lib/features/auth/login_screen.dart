@@ -37,7 +37,10 @@ class _LoginScreenState extends State<LoginScreen> {
     final password = passwordController.text;
 
     if (email.isEmpty || password.isEmpty) {
-      showMessage('Enter your email and password.', type: AppNoticeType.warning);
+      showMessage(
+        'Enter your email and password.',
+        type: AppNoticeType.warning,
+      );
       return;
     }
 
@@ -54,7 +57,10 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } catch (error) {
       showMessage(
-        _authService.friendlyAuthError(error, scope: AuthErrorScope.email),
+        _authService.friendlyAuthError(
+          error,
+          scope: AuthErrorScope.email,
+        ),
         type: AppNoticeType.error,
       );
     }
@@ -64,12 +70,15 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
+  void showMessage(
+      String message, {
+        AppNoticeType type = AppNoticeType.info,
+      }) {
     if (!mounted) return;
     AppNotice.show(context, message, type: type);
   }
 
-  Future<void> _openPhoneLogin() async {
+  Future<void> _openMobileVerification() async {
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -93,52 +102,23 @@ class _LoginScreenState extends State<LoginScreen> {
                 subtitle: 'Login to control your smart home from anywhere.',
               ),
               const SizedBox(height: 36),
-              OutlinedButton.icon(
-                onPressed: isLoading ? null : _openPhoneLogin,
-                icon: const Icon(Icons.phone_android_rounded),
-                label: const Text(
-                  'Continue with Mobile Number',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(56),
-                  foregroundColor: AppTheme.primaryDark,
-                  side: BorderSide(color: AppTheme.primary.withValues(alpha: 0.35)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  const Expanded(child: Divider()),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Text(
-                      'or use email',
-                      style: TextStyle(
-                        color: AppTheme.lightText.withValues(alpha: 0.9),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  const Expanded(child: Divider()),
-                ],
-              ),
-              const SizedBox(height: 24),
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
+                autofillHints: const [AutofillHints.email],
                 decoration: const InputDecoration(
                   hintText: 'Email address',
                   prefixIcon: Icon(Icons.email_outlined),
                 ),
+                onSubmitted: (_) {
+                  if (!isLoading) loginUser();
+                },
               ),
               const SizedBox(height: 16),
               TextField(
                 controller: passwordController,
                 obscureText: hidePassword,
+                autofillHints: const [AutofillHints.password],
                 decoration: InputDecoration(
                   hintText: 'Password',
                   prefixIcon: const Icon(Icons.lock_outline),
@@ -155,6 +135,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
+                onSubmitted: (_) {
+                  if (!isLoading) loginUser();
+                },
               ),
               const SizedBox(height: 14),
               Align(
@@ -183,7 +166,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                       : const Text(
-                    'Login with Email',
+                    'Sign In',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
@@ -191,7 +174,47 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+              Center(
+                child: TextButton(
+                  onPressed: isLoading ? null : _openMobileVerification,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.primaryDark,
+                    minimumSize: const Size(48, 44),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Use mobile verification instead',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      Icon(Icons.arrow_forward_rounded, size: 17),
+                    ],
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  'We will send a one-time verification code to your mobile number.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppTheme.lightText,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [

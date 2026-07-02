@@ -4,6 +4,7 @@ import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
 import '../../services/auth_service.dart';
 import 'account_protection_screen.dart';
+import 'login_screen.dart';
 import 'phone_auth_mode.dart';
 import 'phone_auth_screen.dart';
 import 'widgets/auth_header.dart';
@@ -38,12 +39,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final password = passwordController.text;
 
     if (name.isEmpty || email.isEmpty || password.isEmpty) {
-      showMessage('Complete all fields to create your account.', type: AppNoticeType.warning);
+      showMessage(
+        'Complete all fields to create your account.',
+        type: AppNoticeType.warning,
+      );
       return;
     }
 
     if (password.length < 6) {
-      showMessage('Choose a password with at least 6 characters.', type: AppNoticeType.warning);
+      showMessage(
+        'Choose a password with at least 6 characters.',
+        type: AppNoticeType.warning,
+      );
       return;
     }
 
@@ -77,7 +84,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
     } catch (error) {
       showMessage(
-        _authService.friendlyAuthError(error, scope: AuthErrorScope.email),
+        _authService.friendlyAuthError(
+          error,
+          scope: AuthErrorScope.email,
+        ),
         type: AppNoticeType.error,
       );
     } finally {
@@ -85,12 +95,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  void showMessage(String message, {AppNoticeType type = AppNoticeType.info}) {
+  void showMessage(
+      String message, {
+        AppNoticeType type = AppNoticeType.info,
+      }) {
     if (!mounted) return;
     AppNotice.show(context, message, type: type);
   }
 
-  Future<void> _openPhoneRegister() async {
+  Future<void> _openMobileVerification() async {
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -112,6 +125,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: IconButton(
+                  tooltip: 'Back',
                   onPressed: () => Navigator.pop(context),
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
@@ -121,46 +135,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 title: 'Create Account',
                 subtitle: 'Securely connect and manage your smart home devices.',
               ),
-              const SizedBox(height: 28),
-              OutlinedButton.icon(
-                onPressed: isLoading ? null : _openPhoneRegister,
-                icon: const Icon(Icons.phone_android_rounded),
-                label: const Text(
-                  'Create Account with Mobile Number',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(56),
-                  foregroundColor: AppTheme.primaryDark,
-                  side: BorderSide(
-                    color: AppTheme.primary.withValues(alpha: 0.35),
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  const Expanded(child: Divider()),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Text(
-                      'or use email',
-                      style: TextStyle(
-                        color: AppTheme.lightText.withValues(alpha: 0.9),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  const Expanded(child: Divider()),
-                ],
-              ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 30),
               TextField(
                 controller: nameController,
                 textCapitalization: TextCapitalization.words,
+                autofillHints: const [AutofillHints.name],
                 decoration: const InputDecoration(
                   hintText: 'Full name',
                   prefixIcon: Icon(Icons.person_outline),
@@ -170,6 +149,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
+                autofillHints: const [AutofillHints.email],
                 decoration: const InputDecoration(
                   hintText: 'Email address',
                   prefixIcon: Icon(Icons.email_outlined),
@@ -179,8 +159,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
               TextField(
                 controller: passwordController,
                 obscureText: hidePassword,
+                autofillHints: const [AutofillHints.newPassword],
                 decoration: InputDecoration(
-                  hintText: 'Password',
+                  hintText: 'Create password',
                   prefixIcon: const Icon(Icons.lock_outline),
                   suffixIcon: IconButton(
                     onPressed: () {
@@ -193,6 +174,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     ),
                   ),
                 ),
+                onSubmitted: (_) {
+                  if (!isLoading) createAccount();
+                },
               ),
               const SizedBox(height: 26),
               SizedBox(
@@ -206,11 +190,74 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                       : const Text(
-                    'Create Account with Email',
+                    'Create Account',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
                     ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Already have an account?',
+                    style: TextStyle(color: AppTheme.lightText),
+                  ),
+                  TextButton(
+                    onPressed: isLoading
+                        ? null
+                        : () {
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                          builder: (_) => const LoginScreen(),
+                        ),
+                            (route) => false,
+                      );
+                    },
+                    child: const Text('Sign in'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: TextButton(
+                  onPressed: isLoading ? null : _openMobileVerification,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.primaryDark,
+                    minimumSize: const Size(48, 44),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Prefer mobile? Use mobile verification',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      Icon(Icons.arrow_forward_rounded, size: 17),
+                    ],
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  'Verify your number with a one-time code, then add a recovery email later.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppTheme.lightText,
+                    fontSize: 12,
+                    height: 1.35,
                   ),
                 ),
               ),

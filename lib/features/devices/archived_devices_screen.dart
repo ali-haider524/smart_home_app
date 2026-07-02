@@ -16,7 +16,14 @@ class ArchivedDevicesScreen extends StatefulWidget {
 
 class _ArchivedDevicesScreenState extends State<ArchivedDevicesScreen> {
   final DeviceService _deviceService = DeviceService();
+  late final Stream<List<DeviceModel>> _archivedDevicesStream;
   String? _restoringId;
+
+  @override
+  void initState() {
+    super.initState();
+    _archivedDevicesStream = _deviceService.listenArchivedDevices();
+  }
 
   Future<void> _restore(DeviceModel device) async {
     setState(() => _restoringId = device.id);
@@ -56,7 +63,7 @@ class _ArchivedDevicesScreenState extends State<ArchivedDevicesScreen> {
         title: const Text('Archived Devices'),
       ),
       body: StreamBuilder<List<DeviceModel>>(
-        stream: _deviceService.listenArchivedDevices(),
+        stream: _archivedDevicesStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return const _ArchiveMessage(
