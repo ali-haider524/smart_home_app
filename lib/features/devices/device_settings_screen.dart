@@ -4,6 +4,7 @@ import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
 import '../../models/device_model.dart';
 import '../../services/device_service.dart';
+import 'energy_estimate_settings_screen.dart';
 
 /// Returned to DeviceControlScreen after settings changes.
 class DeviceSettingsResult {
@@ -94,6 +95,18 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
         setState(() => _busy = false);
       }
     }
+  }
+
+  Future<void> _openEnergyEstimateSettings() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EnergyEstimateSettingsScreen(
+          deviceId: widget.deviceId,
+          deviceName: _deviceName,
+        ),
+      ),
+    );
   }
 
   Future<void> _changeWiFi({required bool online}) async {
@@ -246,7 +259,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
           onPressed: _busy ? null : _close,
           icon: const Icon(Icons.arrow_back_rounded),
         ),
-        title: const Text('Device Settings'),
+        title: const Text('Device settings'),
       ),
       body: StreamBuilder<DeviceModel?>(
         stream: _deviceStream,
@@ -255,7 +268,8 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
           final online = device?.isOnline == true;
 
           return ListView(
-            padding: const EdgeInsets.fromLTRB(20, 14, 20, 36),
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 34),
             children: [
               _DeviceIdentityCard(
                 deviceName: _deviceName,
@@ -264,55 +278,71 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
                 lastSeen: device?.lastSeenText ?? 'Checking status',
                 model: device?.model ?? 'SW1',
               ),
+              if (device?.registrationNeedsAttention == true) ...[
+                const SizedBox(height: 12),
+                _ProductRegistrationCard(device: device!),
+              ],
               const SizedBox(height: 22),
-              if (device != null)
-                _ProductRegistrationCard(device: device),
-              const SizedBox(height: 26),
-              const _SettingsSectionTitle('Device'),
+              const _SettingsSectionTitle('Controls'),
               const SizedBox(height: 10),
               _SettingsCard(
                 children: [
                   _SettingsTile(
                     icon: Icons.edit_rounded,
                     iconColor: AppTheme.primary,
-                    title: 'Rename Device',
+                    title: 'Rename device',
                     subtitle: 'Change the name shown in your app',
                     onTap: _busy ? null : _renameDevice,
                   ),
                   const _SettingsDivider(),
                   _SettingsTile(
+                    icon: Icons.energy_savings_leaf_outlined,
+                    iconColor: AppTheme.success,
+                    title: 'Estimated energy',
+                    subtitle: 'Appliance watts and optional electricity price',
+                    onTap: _busy ? null : _openEnergyEstimateSettings,
+                  ),
+                  const _SettingsDivider(),
+                  _SettingsTile(
                     icon: Icons.wifi_find_rounded,
                     iconColor: Colors.orange,
-                    title: 'Change WiFi',
+                    title: 'Change Wi-Fi',
                     subtitle: online
-                        ? 'Reset WiFi and open setup mode'
-                        : 'Device must be online first',
+                        ? 'Reset Wi-Fi and connect this device again'
+                        : 'Device must be online before changing Wi-Fi',
                     trailing: online
-                        ? const Icon(Icons.chevron_right_rounded)
+                        ? const Icon(Icons.chevron_right_rounded, color: AppTheme.lightText)
                         : const _OfflinePill(),
                     onTap: _busy ? null : () => _changeWiFi(online: online),
                   ),
                 ],
               ),
-              const SizedBox(height: 26),
-              const _SettingsSectionTitle('Account'),
+              const SizedBox(height: 22),
+              const _SettingsSectionTitle('Device information'),
+              const SizedBox(height: 10),
+              if (device != null)
+                _DeviceInformationCard(device: device)
+              else
+                _DeviceInformationPlaceholder(deviceId: widget.deviceId),
+              const SizedBox(height: 22),
+              const _SettingsSectionTitle('Device management'),
               const SizedBox(height: 10),
               _SettingsCard(
                 children: [
                   _SettingsTile(
-                    icon: Icons.remove_circle_outline_rounded,
+                    icon: Icons.inventory_2_outlined,
                     iconColor: Colors.red,
-                    title: 'Remove from My Devices',
-                    subtitle: 'Hide it safely and restore it later',
+                    title: 'Archive device',
+                    subtitle: 'Hide it from Home and restore it later',
                     titleColor: Colors.red.shade700,
                     onTap: _busy ? null : _removeFromMyDevices,
                   ),
                 ],
               ),
-              const SizedBox(height: 22),
+              const SizedBox(height: 16),
               const _SafetyNote(),
               if (_busy) ...[
-                const SizedBox(height: 24),
+                const SizedBox(height: 22),
                 const Center(child: CircularProgressIndicator()),
               ],
             ],
@@ -321,6 +351,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       ),
     );
   }
+
 }
 
 class _ProductRegistrationCard extends StatelessWidget {
@@ -473,41 +504,38 @@ class _DeviceIdentityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = online ? Colors.green : Colors.orange;
+    final statusColor = online ? AppTheme.success : Colors.orange;
 
     return Container(
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF2563EB), Color(0xFF1E40AF)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(30),
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppTheme.outline),
         boxShadow: [
           BoxShadow(
-            color: AppTheme.primary.withValues(alpha: 0.28),
-            blurRadius: 24,
-            offset: const Offset(0, 14),
+            color: Colors.black.withValues(alpha: 0.035),
+            blurRadius: 14,
+            offset: const Offset(0, 7),
           ),
         ],
       ),
       child: Row(
         children: [
           Container(
-            height: 64,
-            width: 64,
+            height: 50,
+            width: 50,
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(22),
+              color: AppTheme.primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(17),
             ),
             child: const Icon(
-              Icons.memory_rounded,
-              color: Colors.white,
-              size: 32,
+              Icons.power_outlined,
+              color: AppTheme.primaryDark,
+              size: 27,
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 13),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -517,52 +545,177 @@ class _DeviceIdentityCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
+                    color: AppTheme.darkText,
+                    fontSize: 17,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 4),
                 Text(
-                  deviceId,
+                  '$model · $deviceId',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Colors.white70,
+                    color: AppTheme.lightText,
                     fontSize: 12,
-                    letterSpacing: 0.4,
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 9),
                 Row(
                   children: [
                     Container(
-                      height: 9,
-                      width: 9,
+                      height: 8,
+                      width: 8,
                       decoration: BoxDecoration(
                         color: statusColor,
                         shape: BoxShape.circle,
                       ),
                     ),
-                    const SizedBox(width: 7),
+                    const SizedBox(width: 6),
                     Text(
-                      online ? 'Online • $lastSeen' : 'Offline • $lastSeen',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      model,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
+                      online ? 'Online · $lastSeen' : 'Offline · $lastSeen',
+                      style: TextStyle(
+                        color: statusColor,
+                        fontSize: 11,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
                   ],
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeviceInformationCard extends StatelessWidget {
+  final DeviceModel device;
+
+  const _DeviceInformationCard({required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: _settingsCardDecoration(),
+      child: Material(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(22),
+        clipBehavior: Clip.antiAlias,
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            leading: Container(
+              height: 42,
+              width: 42,
+              decoration: BoxDecoration(
+                color: Colors.blueGrey.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(
+                Icons.info_outline_rounded,
+                color: Colors.blueGrey,
+                size: 21,
+              ),
+            ),
+            title: const Text(
+              'Device details',
+              style: TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            subtitle: Text(
+              '${device.model} · ${device.firmwareVersion}',
+              style: const TextStyle(color: AppTheme.lightText, fontSize: 12),
+            ),
+            children: [
+              _InfoLine(label: 'Device ID', value: device.id),
+              _InfoLine(label: 'Model', value: device.model),
+              _InfoLine(label: 'Firmware', value: device.firmwareVersion),
+              _InfoLine(
+                label: 'Channels',
+                value: '${device.channelCount} channel${device.channelCount == 1 ? '' : 's'}',
+              ),
+              _InfoLine(label: 'Product status', value: device.registrationLabel),
+              _InfoLine(label: 'Last seen', value: device.lastSeenText),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DeviceInformationPlaceholder extends StatelessWidget {
+  final String deviceId;
+
+  const _DeviceInformationPlaceholder({required this.deviceId});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: _settingsCardDecoration(),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline_rounded, color: AppTheme.lightText),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Device information will appear when $deviceId is available.',
+              style: const TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoLine extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoLine({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],
@@ -589,6 +742,21 @@ class _SettingsSectionTitle extends StatelessWidget {
   }
 }
 
+BoxDecoration _settingsCardDecoration() {
+  return BoxDecoration(
+    color: AppTheme.card,
+    borderRadius: BorderRadius.circular(22),
+    border: Border.all(color: AppTheme.outline),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.035),
+        blurRadius: 14,
+        offset: const Offset(0, 7),
+      ),
+    ],
+  );
+}
+
 class _SettingsCard extends StatelessWidget {
   final List<Widget> children;
 
@@ -597,22 +765,7 @@ class _SettingsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(26),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 20,
-            offset: const Offset(7, 10),
-          ),
-          BoxShadow(
-            color: Colors.white.withValues(alpha: 0.92),
-            blurRadius: 16,
-            offset: const Offset(-6, -6),
-          ),
-        ],
-      ),
+      decoration: _settingsCardDecoration(),
       child: Column(children: children),
     );
   }
@@ -642,22 +795,22 @@ class _SettingsTile extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(26),
+        borderRadius: BorderRadius.circular(22),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
           child: Row(
             children: [
               Container(
-                height: 46,
-                width: 46,
+                height: 42,
+                width: 42,
                 decoration: BoxDecoration(
                   color: iconColor.withValues(alpha: 0.11),
-                  borderRadius: BorderRadius.circular(15),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(icon, color: iconColor),
+                child: Icon(icon, color: iconColor, size: 22),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -667,10 +820,10 @@ class _SettingsTile extends StatelessWidget {
                       style: TextStyle(
                         color: titleColor ?? AppTheme.darkText,
                         fontWeight: FontWeight.w900,
-                        fontSize: 15,
+                        fontSize: 14,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
                       subtitle,
                       style: const TextStyle(

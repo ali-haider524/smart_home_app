@@ -1,9 +1,19 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_language.dart';
 import '../../core/app_theme.dart';
+import '../automation/automation_hub_screen.dart';
 import '../devices/dashboard_screen.dart';
 import '../settings/app_settings_screen.dart';
 
+/// The main shell intentionally stays small:
+/// Home = devices and setup entry point,
+/// Auto = timers and schedules,
+/// Settings = account, support and device management.
+///
+/// Add Device remains available from Home and Settings instead of becoming a
+/// permanent bottom-navigation item. This is UI-only navigation; no service or
+/// device-control contract is changed here.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -12,115 +22,133 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int selectedIndex = 0;
+  int _selectedIndex = 0;
 
-  final List<Widget> pages = const [
+  final List<Widget> _pages = const [
     DashboardScreen(),
-    Center(child: Text('Add Device')),
-    Center(child: Text('Automation')),
+    AutomationHubScreen(),
     AppSettingsScreen(),
   ];
+
+  void _selectTab(int index) {
+    if (_selectedIndex == index) return;
+    setState(() => _selectedIndex = index);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
-      body: pages[selectedIndex],
+      body: _pages[_selectedIndex],
       bottomNavigationBar: Container(
-        margin: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
           color: AppTheme.card,
-          borderRadius: BorderRadius.circular(30),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 26,
-              offset: const Offset(0, 12),
-            ),
-            BoxShadow(
-              color: Colors.white.withOpacity(0.9),
+              color: Colors.black.withValues(alpha: 0.045),
               blurRadius: 18,
-              offset: const Offset(-6, -6),
+              offset: const Offset(0, -4),
             ),
           ],
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            _NavItem(
-              icon: Icons.home_rounded,
-              label: 'Home',
-              active: selectedIndex == 0,
-              onTap: () => setState(() => selectedIndex = 0),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 72,
+            child: Row(
+              children: [
+                Expanded(
+                  child: _SimpleNavItem(
+                    icon: Icons.home_rounded,
+                    activeIcon: Icons.home_rounded,
+                    label: context.tr('Home'),
+                    selected: _selectedIndex == 0,
+                    onTap: () => _selectTab(0),
+                  ),
+                ),
+                Expanded(
+                  child: _SimpleNavItem(
+                    icon: Icons.schedule_outlined,
+                    activeIcon: Icons.schedule_rounded,
+                    label: context.tr('Auto'),
+                    selected: _selectedIndex == 1,
+                    onTap: () => _selectTab(1),
+                  ),
+                ),
+                Expanded(
+                  child: _SimpleNavItem(
+                    icon: Icons.settings_outlined,
+                    activeIcon: Icons.settings_rounded,
+                    label: context.tr('Settings'),
+                    selected: _selectedIndex == 2,
+                    onTap: () => _selectTab(2),
+                  ),
+                ),
+              ],
             ),
-            _NavItem(
-              icon: Icons.add_circle_rounded,
-              label: 'Add',
-              active: selectedIndex == 1,
-              onTap: () => setState(() => selectedIndex = 1),
-            ),
-            _NavItem(
-              icon: Icons.schedule_rounded,
-              label: 'Auto',
-              active: selectedIndex == 2,
-              onTap: () => setState(() => selectedIndex = 2),
-            ),
-            _NavItem(
-              icon: Icons.settings_rounded,
-              label: 'Settings',
-              active: selectedIndex == 3,
-              onTap: () => setState(() => selectedIndex = 3),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _NavItem extends StatelessWidget {
+class _SimpleNavItem extends StatelessWidget {
   final IconData icon;
+  final IconData activeIcon;
   final String label;
-  final bool active;
+  final bool selected;
   final VoidCallback onTap;
 
-  const _NavItem({
+  const _SimpleNavItem({
     required this.icon,
+    required this.activeIcon,
     required this.label,
-    required this.active,
+    required this.selected,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(22),
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-        decoration: BoxDecoration(
-          color: active ? AppTheme.primary.withOpacity(0.12) : Colors.transparent,
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              color: active ? AppTheme.primary : AppTheme.lightText,
+    final color = selected ? AppTheme.primary : AppTheme.lightText;
+
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  height: 3,
+                  width: selected ? 22 : 0,
+                  margin: const EdgeInsets.only(bottom: 7),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+                Icon(selected ? activeIcon : icon, color: color, size: 22),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 10.5,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: active ? FontWeight.w800 : FontWeight.w500,
-                color: active ? AppTheme.primary : AppTheme.lightText,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

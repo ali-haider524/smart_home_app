@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 
 import '../models/device_model.dart';
+import '../models/energy_estimate.dart';
 import '../models/schedule_model.dart';
 
 /// Thrown when a device cannot be paired with the current account.
@@ -516,6 +517,80 @@ class DeviceService {
       'nickname': nickname,
       'active': true,
       'addedAt': ServerValue.timestamp,
+    });
+  }
+
+  /// Reads optional, user-specific values used for an approximate energy
+  /// calculation. The ESP device tree is intentionally not involved.
+  Stream<EnergyEstimateSettings> listenEnergyEstimateSettings(String deviceId) {
+    final uid = currentUid;
+    if (uid == null) {
+      return Stream.value(EnergyEstimateSettings.empty);
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+
+    return _usersRef
+        .child(uid)
+        .child('devices')
+        .child(normalizedDeviceId)
+        .child('energyEstimate')
+        .onValue
+        .map((event) {
+      final value = event.snapshot.value;
+      if (value is! Map) {
+        return EnergyEstimateSettings.empty;
+      }
+
+      return EnergyEstimateSettings.fromMap(
+        Map<dynamic, dynamic>.from(value),
+      );
+    });
+  }
+
+  /// Saves optional display preferences for estimated energy only.
+  ///
+  /// This method does not touch /devices/{deviceId}, so it cannot affect relay
+  /// commands, firmware, timers, schedules, Wi-Fi setup, or device ownership.
+  Future<void> saveEnergyEstimateSettings({
+    required String deviceId,
+    required int ratedWatts,
+    required double unitRate,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please log in before saving energy settings.',
+      );
+    }
+
+    if (ratedWatts < 1 || ratedWatts > 20000) {
+      throw const DeviceMaintenanceException(
+        'Appliance power must be between 1 and 20,000 watts.',
+      );
+    }
+
+    if (unitRate < 0 || unitRate > 10000) {
+      throw const DeviceMaintenanceException(
+        'Enter a valid electricity price, or leave it empty.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final userDeviceRef =
+    _usersRef.child(uid).child('devices').child(normalizedDeviceId);
+    final mapping = await userDeviceRef.get();
+
+    if (!mapping.exists) {
+      throw const DeviceMaintenanceException(
+        'This device is no longer in your device list.',
+      );
+    }
+
+    await userDeviceRef.child('energyEstimate').update({
+      'ratedWatts': ratedWatts,
+      'unitRate': unitRate,
+      'updatedAt': ServerValue.timestamp,
     });
   }
 

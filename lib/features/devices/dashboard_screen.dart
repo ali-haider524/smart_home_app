@@ -1,16 +1,19 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_language.dart';
 import '../../core/app_theme.dart';
 import '../../models/device_model.dart';
 import '../../services/app_ticker.dart';
 import '../../services/device_service.dart';
+import '../settings/app_settings_screen.dart';
 import 'add_device_screen.dart';
 import 'archived_devices_screen.dart';
 import 'device_control_screen.dart';
 
-/// Phase 6A.1 keeps the existing Dashboard data, navigation, and control
-/// contracts unchanged. It only refines the visual layout to be more compact
-/// and to avoid small-screen RenderFlex overflows.
+/// The main home view reads existing device streams and opens the existing
+/// device, archive, pairing and settings screens. This UI pass does not change
+/// Firebase paths, commands, pairing, timers, schedules or Wi-Fi behaviour.
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -20,24 +23,19 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final DeviceService _deviceService = DeviceService();
-  late final Stream<List<DeviceModel>> _activeDevicesStream;
+  late final Stream<List<DeviceModel>> _devicesStream;
+  late final Stream<List<DeviceModel>> _archivedDevicesStream;
 
   @override
   void initState() {
     super.initState();
-    // Keeps Phase 5A-2 secure read behavior: only mapped user devices are read.
-    _activeDevicesStream = _deviceService.listenAllDevices();
+    _devicesStream = _deviceService.listenAllDevices();
+    _archivedDevicesStream = _deviceService.listenArchivedDevices();
   }
 
   void _openAddDevice() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const AddDeviceScreen()),
-    );
-  }
-
-  void _openArchivedDevices() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ArchivedDevicesScreen()),
     );
   }
 
@@ -52,118 +50,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _openArchivedDevices() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ArchivedDevicesScreen()),
+    );
+  }
+
+  void _openProfileAndSettings() {
+    // AppSettingsScreen is normally displayed inside HomeShell. When opened
+    // from the profile shortcut, it needs an opaque page behind it so Android
+    // never shows a transparent or black route during the transition.
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const Scaffold(
+          backgroundColor: AppTheme.background,
+          body: AppSettingsScreen(),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
       body: SafeArea(
+        bottom: false,
         child: StreamBuilder<List<DeviceModel>>(
-          stream: _activeDevicesStream,
+          stream: _devicesStream,
           builder: (context, deviceSnapshot) {
-            return StreamBuilder<DateTime>(
-              stream: AppTicker.instance.stream,
-              builder: (context, _) {
-                final devices = deviceSnapshot.data ?? const <DeviceModel>[];
-                final overview = _DashboardOverview.fromDevices(devices);
+            return StreamBuilder<List<DeviceModel>>(
+              stream: _archivedDevicesStream,
+              builder: (context, archivedSnapshot) {
+                return StreamBuilder<DateTime>(
+                  stream: AppTicker.instance.stream,
+                  builder: (context, _) {
+                    final devices =
+                        deviceSnapshot.data ?? const <DeviceModel>[];
+                    final archivedCount = archivedSnapshot.data?.length ?? 0;
+                    final overview = _HomeOverview.fromDevices(devices);
 
-                return CustomScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  slivers: [
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-                      sliver: SliverToBoxAdapter(
-                        child: _DashboardHeader(
-                          subtitle: _dashboardSubtitle(overview),
-                          onOpenArchived: _openArchivedDevices,
-                        ),
-                      ),
-                    ),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-                      sliver: SliverToBoxAdapter(
-                        child: _HomeStatusPanel(
-                          overview: overview,
-                          onAddDevice: _openAddDevice,
-                        ),
-                      ),
-                    ),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-                      sliver: SliverToBoxAdapter(
-                        child: _OverviewGrid(overview: overview),
-                      ),
-                    ),
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
-                      sliver: SliverToBoxAdapter(
-                        child: _DevicesSectionHeader(
-                          deviceCount: devices.length,
-                          onAddDevice: _openAddDevice,
-                        ),
-                      ),
-                    ),
-                    if (deviceSnapshot.hasError)
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        sliver: SliverToBoxAdapter(
-                          child: _DashboardMessageCard(
-                            icon: Icons.cloud_off_rounded,
-                            title: 'Could not load devices',
-                            detail:
-                            'Check your internet connection, then return to this screen.',
-                          ),
-                        ),
-                      )
-                    else if (deviceSnapshot.connectionState ==
-                        ConnectionState.waiting &&
-                        !deviceSnapshot.hasData)
-                      const SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(vertical: 42),
-                          child: Center(child: CircularProgressIndicator()),
-                        ),
-                      )
-                    else if (devices.isEmpty)
+                    return CustomScrollView(
+                      physics: const BouncingScrollPhysics(),
+                      slivers: [
                         SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          padding: const EdgeInsets.fromLTRB(20, 18, 20, 104),
                           sliver: SliverToBoxAdapter(
-                            child: _EmptyDevicesCard(onAddDevice: _openAddDevice),
-                          ),
-                        )
-                      else
-                        SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 20),
-                          sliver: SliverList(
-                            delegate: SliverChildBuilderDelegate(
-                                  (context, index) {
-                                final itemIndex = index ~/ 2;
-
-                                if (index.isOdd) {
-                                  return const SizedBox(height: 12);
-                                }
-
-                                final device = devices[itemIndex];
-                                return _DeviceOverviewCard(
-                                  device: device,
-                                  onTap: () => _openDevice(device),
-                                );
-                              },
-                              childCount: devices.length == 1
-                                  ? 1
-                                  : (devices.length * 2) - 1,
+                            child: Center(
+                              child: ConstrainedBox(
+                                constraints:
+                                const BoxConstraints(maxWidth: 680),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _HomeHeader(
+                                      greeting: context.tr(_greetingText()),
+                                      subtitle:
+                                      _headerSubtitle(context, overview),
+                                      archivedCount: archivedCount,
+                                      profileInitial: _profileInitial(),
+                                      onOpenArchived: _openArchivedDevices,
+                                      onOpenProfile: _openProfileAndSettings,
+                                    ),
+                                    const SizedBox(height: 24),
+                                    if (deviceSnapshot.hasError) ...[
+                                      _LoadErrorCard(
+                                        onRetry: () => setState(() {}),
+                                      ),
+                                      const SizedBox(height: 16),
+                                    ],
+                                    _QuickStatusRow(overview: overview),
+                                    const SizedBox(height: 28),
+                                    _SectionHeader(
+                                      title: context.tr('Your devices'),
+                                      subtitle:
+                                      context.l10n.devices(devices.length),
+                                      actionLabel: devices.isEmpty
+                                          ? null
+                                          : context.tr('Add device'),
+                                      onAction: devices.isEmpty
+                                          ? null
+                                          : _openAddDevice,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    if (devices.isEmpty)
+                                      _EmptyHomeCard(
+                                        onAddDevice: _openAddDevice,
+                                      )
+                                    else
+                                      for (var index = 0;
+                                      index < devices.length;
+                                      index++) ...[
+                                        _DeviceCard(
+                                          device: devices[index],
+                                          onTap: () =>
+                                              _openDevice(devices[index]),
+                                        ),
+                                        if (index != devices.length - 1)
+                                          const SizedBox(height: 12),
+                                      ],
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
                         ),
-                    if (devices.isNotEmpty)
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 34),
-                        sliver: SliverToBoxAdapter(
-                          child: _AddAnotherDeviceCard(onTap: _openAddDevice),
-                        ),
-                      )
-                    else
-                      const SliverToBoxAdapter(child: SizedBox(height: 34)),
-                  ],
+                      ],
+                    );
+                  },
                 );
               },
             );
@@ -173,80 +167,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  String _dashboardSubtitle(_DashboardOverview overview) {
-    if (overview.totalDevices == 0) {
-      return 'Set up your first smart switch to get started.';
+  String _headerSubtitle(BuildContext context, _HomeOverview overview) {
+    if (overview.total == 0) {
+      return context.tr('Add your first smart switch to get started.');
     }
 
-    if (overview.onlineDevices == 0) {
-      return 'Your devices are offline. Check their power and Wi-Fi.';
+    if (overview.online == 0) {
+      return context.tr('Check power and Wi-Fi');
     }
 
-    if (overview.activeDevices > 0) {
-      return '${overview.activeDevices} device${overview.activeDevices == 1 ? '' : 's'} active right now.';
-    }
+    return context.l10n.activeNow(overview.active);
+  }
 
-    return '${overview.onlineDevices} device${overview.onlineDevices == 1 ? '' : 's'} ready to control.';
+  String _greetingText() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  }
+
+  String _profileInitial() {
+    final user = FirebaseAuth.instance.currentUser;
+    final displayName = (user?.displayName ?? '').trim();
+    final email = (user?.email ?? '').trim();
+    final phone = (user?.phoneNumber ?? '').trim();
+    final source = displayName.isNotEmpty
+        ? displayName
+        : (email.isNotEmpty ? email : (phone.isNotEmpty ? phone : 'U'));
+
+    return source.substring(0, 1).toUpperCase();
   }
 }
 
-class _DashboardOverview {
-  final int totalDevices;
-  final int onlineDevices;
-  final int activeDevices;
-  final int activeTimers;
-  final int activeSchedules;
-
-  const _DashboardOverview({
-    required this.totalDevices,
-    required this.onlineDevices,
-    required this.activeDevices,
-    required this.activeTimers,
-    required this.activeSchedules,
-  });
-
-  factory _DashboardOverview.fromDevices(List<DeviceModel> devices) {
-    var onlineDevices = 0;
-    var activeDevices = 0;
-    var activeTimers = 0;
-    var activeSchedules = 0;
-
-    for (final device in devices) {
-      if (device.isOnline) onlineDevices++;
-      if (device.channels['ch1']?.state == true) activeDevices++;
-      if (device.timers['ch1']?.enabled == true) activeTimers++;
-      activeSchedules += device.schedules['ch1']?.activeCount ?? 0;
-    }
-
-    return _DashboardOverview(
-      totalDevices: devices.length,
-      onlineDevices: onlineDevices,
-      activeDevices: activeDevices,
-      activeTimers: activeTimers,
-      activeSchedules: activeSchedules,
-    );
-  }
-}
-
-class _DashboardHeader extends StatelessWidget {
+class _HomeHeader extends StatelessWidget {
+  final String greeting;
   final String subtitle;
+  final int archivedCount;
+  final String profileInitial;
   final VoidCallback onOpenArchived;
+  final VoidCallback onOpenProfile;
 
-  const _DashboardHeader({
+  const _HomeHeader({
+    required this.greeting,
     required this.subtitle,
+    required this.archivedCount,
+    required this.profileInitial,
     required this.onOpenArchived,
+    required this.onOpenProfile,
   });
 
   @override
   Widget build(BuildContext context) {
-    final hour = DateTime.now().hour;
-    final greeting = hour < 12
-        ? 'Good morning'
-        : hour < 17
-        ? 'Good afternoon'
-        : 'Good evening';
-
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Column(
@@ -254,20 +227,24 @@ class _DashboardHeader extends StatelessWidget {
             children: [
               Text(
                 greeting,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppTheme.lightText,
-                  fontSize: 13,
+                  fontSize: 12.5,
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 5),
               const Text(
                 'Easy Home Control',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: AppTheme.darkText,
-                  fontSize: 24,
+                  fontSize: 25,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: -0.65,
+                  letterSpacing: -0.75,
                 ),
               ),
               const SizedBox(height: 5),
@@ -277,7 +254,7 @@ class _DashboardHeader extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppTheme.lightText,
-                  fontSize: 12.5,
+                  fontSize: 13,
                   height: 1.3,
                 ),
               ),
@@ -285,45 +262,95 @@ class _DashboardHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        _HeaderAction(onTap: onOpenArchived),
+        Column(
+          children: [
+            _HeaderArchiveButton(
+              count: archivedCount,
+              onTap: onOpenArchived,
+            ),
+            const SizedBox(height: 8),
+            _ProfileButton(
+              initial: profileInitial,
+              onTap: onOpenProfile,
+            ),
+          ],
+        ),
       ],
     );
   }
 }
 
-class _HeaderAction extends StatelessWidget {
+class _HeaderArchiveButton extends StatelessWidget {
+  final int count;
   final VoidCallback onTap;
 
-  const _HeaderAction({required this.onTap});
+  const _HeaderArchiveButton({required this.count, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppTheme.card,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Tooltip(
-          message: 'Archived devices',
-          child: Container(
-            height: 48,
-            width: 48,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.primary.withOpacity(0.10)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 12,
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.inventory_2_outlined,
-              color: AppTheme.primary,
-              size: 22,
+    final semanticLabel = count > 0
+        ? '$count archived device${count == 1 ? '' : 's'}'
+        : 'Archived devices';
+
+    return Semantics(
+      button: true,
+      label: semanticLabel,
+      child: Tooltip(
+        message: semanticLabel,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(14),
+            child: Ink(
+              height: 38,
+              width: 38,
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppTheme.outline),
+              ),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Center(
+                    child: Icon(
+                      Icons.inventory_2_outlined,
+                      color: AppTheme.lightText,
+                      size: 19,
+                    ),
+                  ),
+                  if (count > 0)
+                    Positioned(
+                      top: -5,
+                      right: -5,
+                      child: Container(
+                        constraints: const BoxConstraints(
+                          minWidth: 17,
+                          minHeight: 17,
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: AppTheme.automation,
+                          borderRadius: BorderRadius.circular(99),
+                          border: Border.all(
+                            color: AppTheme.background,
+                            width: 2,
+                          ),
+                        ),
+                        child: Text(
+                          count > 99 ? '99+' : count.toString(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -332,248 +359,171 @@ class _HeaderAction extends StatelessWidget {
   }
 }
 
-class _HomeStatusPanel extends StatelessWidget {
-  final _DashboardOverview overview;
-  final VoidCallback onAddDevice;
+class _ProfileButton extends StatelessWidget {
+  final String initial;
+  final VoidCallback onTap;
 
-  const _HomeStatusPanel({
-    required this.overview,
-    required this.onAddDevice,
-  });
+  const _ProfileButton({required this.initial, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final hasDevices = overview.totalDevices > 0;
-    final hasOnlineDevices = overview.onlineDevices > 0;
-
-    final title = !hasDevices
-        ? 'Start with your first device'
-        : hasOnlineDevices
-        ? 'Your home is connected'
-        : 'Waiting for your devices';
-
-    final detail = !hasDevices
-        ? 'Add an Easy Home Control switch and connect it to Wi-Fi.'
-        : hasOnlineDevices
-        ? '${overview.onlineDevices} of ${overview.totalDevices} device${overview.totalDevices == 1 ? '' : 's'} online now.'
-        : 'Restore power or Wi-Fi, then the device will check in again.';
-
-    final icon = !hasDevices
-        ? Icons.home_outlined
-        : hasOnlineDevices
-        ? Icons.wifi_tethering_rounded
-        : Icons.wifi_off_rounded;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [AppTheme.primaryDark, AppTheme.primary],
-        ),
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primary.withOpacity(0.18),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            height: 46,
-            width: 46,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: Colors.white.withOpacity(0.16)),
-            ),
-            child: Icon(icon, color: Colors.white, size: 25),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+    return Semantics(
+      button: true,
+      label: 'Profile and settings',
+      child: Tooltip(
+        message: 'Profile and settings',
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(99),
+            child: Ink(
+              height: 38,
+              width: 38,
+              decoration: BoxDecoration(
+                color: AppTheme.primary.withValues(alpha: 0.10),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: AppTheme.primary.withValues(alpha: 0.18),
+                ),
+              ),
+              child: Center(
+                child: Text(
+                  initial,
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
+                    color: AppTheme.primaryDark,
+                    fontSize: 14.5,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  detail,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.84),
-                    fontSize: 11.5,
-                    height: 1.28,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-          if (!hasDevices) ...[
-            const SizedBox(width: 8),
-            IconButton(
-              onPressed: onAddDevice,
-              tooltip: 'Add device',
-              style: IconButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: AppTheme.primaryDark,
-              ),
-              icon: const Icon(Icons.add_rounded),
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }
 }
 
-class _OverviewGrid extends StatelessWidget {
-  final _DashboardOverview overview;
+/// Small status cards give an at-a-glance summary without turning the home
+/// screen into a long dashboard. They are calculated from existing device data.
+class _QuickStatusRow extends StatelessWidget {
+  final _HomeOverview overview;
 
-  const _OverviewGrid({required this.overview});
+  const _QuickStatusRow({required this.overview});
 
   @override
   Widget build(BuildContext context) {
-    final items = <_OverviewItem>[
-      _OverviewItem(
-        icon: Icons.wifi_rounded,
-        color: Colors.green.shade700,
-        label: 'Online',
-        value: '${overview.onlineDevices}/${overview.totalDevices}',
-      ),
-      _OverviewItem(
-        icon: Icons.power_settings_new_rounded,
-        color: AppTheme.primary,
-        label: 'Active now',
-        value: '${overview.activeDevices}',
-      ),
-      _OverviewItem(
-        icon: Icons.timer_outlined,
-        color: Colors.orange.shade800,
-        label: 'Timers',
-        value: '${overview.activeTimers}',
-      ),
-      _OverviewItem(
-        icon: Icons.schedule_rounded,
-        color: Colors.deepPurple.shade600,
-        label: 'Automations',
-        value: '${overview.activeSchedules}',
-      ),
-    ];
+    final hasOnlineDevice = overview.online > 0;
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final cardWidth = (constraints.maxWidth - 12) / 2;
-
-        return Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: items
-              .map(
-                (item) => SizedBox(
-              width: cardWidth,
-              child: _OverviewStatCard(item: item),
-            ),
-          )
-              .toList(),
-        );
-      },
+    return Row(
+      children: [
+        Expanded(
+          child: _StatusTile(
+            icon: hasOnlineDevice
+                ? Icons.wifi_rounded
+                : Icons.wifi_off_rounded,
+            value: '${overview.online}/${overview.total}',
+            label: context.tr('Online'),
+            color: hasOnlineDevice ? AppTheme.success : AppTheme.warning,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _StatusTile(
+            icon: Icons.power_rounded,
+            value: overview.active.toString(),
+            label: context.tr('ON'),
+            color: overview.active > 0 ? AppTheme.success : AppTheme.primary,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _StatusTile(
+            icon: Icons.schedule_rounded,
+            value: overview.automationCount.toString(),
+            label: context.tr('Auto'),
+            color: AppTheme.automation,
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _OverviewItem {
+class _StatusTile extends StatelessWidget {
   final IconData icon;
-  final Color color;
-  final String label;
   final String value;
+  final String label;
+  final Color color;
 
-  const _OverviewItem({
+  const _StatusTile({
     required this.icon,
-    required this.color,
-    required this.label,
     required this.value,
+    required this.label,
+    required this.color,
   });
-}
-
-class _OverviewStatCard extends StatelessWidget {
-  final _OverviewItem item;
-
-  const _OverviewStatCard({required this.item});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 94,
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+      height: 86,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
       decoration: BoxDecoration(
         color: AppTheme.card,
-        borderRadius: BorderRadius.circular(19),
-        border: Border.all(color: item.color.withOpacity(0.10)),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppTheme.outline.withValues(alpha: 0.76)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.035),
-            blurRadius: 13,
-            offset: const Offset(0, 7),
+            color: Colors.black.withValues(alpha: 0.018),
+            blurRadius: 12,
+            offset: const Offset(0, 5),
           ),
         ],
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Container(
-            height: 38,
-            width: 38,
+            height: 29,
+            width: 29,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: item.color.withOpacity(0.11),
-              borderRadius: BorderRadius.circular(13),
+              color: color.withValues(alpha: 0.11),
+              shape: BoxShape.circle,
             ),
-            child: Icon(item.icon, color: item.color, size: 20),
+            child: Icon(icon, color: color, size: 16),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  item.value,
+          Row(
+            children: [
+              Flexible(
+                child: Text(
+                  value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppTheme.darkText,
-                    fontSize: 20,
+                    fontSize: 15,
                     fontWeight: FontWeight.w900,
-                    letterSpacing: -0.4,
+                    letterSpacing: -0.25,
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  item.label,
+              ),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                  label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppTheme.lightText,
-                    fontSize: 11.5,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ],
       ),
@@ -581,13 +531,17 @@ class _OverviewStatCard extends StatelessWidget {
   }
 }
 
-class _DevicesSectionHeader extends StatelessWidget {
-  final int deviceCount;
-  final VoidCallback onAddDevice;
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final String? actionLabel;
+  final VoidCallback? onAction;
 
-  const _DevicesSectionHeader({
-    required this.deviceCount,
-    required this.onAddDevice,
+  const _SectionHeader({
+    required this.title,
+    required this.subtitle,
+    required this.actionLabel,
+    required this.onAction,
   });
 
   @override
@@ -598,20 +552,18 @@ class _DevicesSectionHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Your devices',
-                style: TextStyle(
+              Text(
+                title,
+                style: const TextStyle(
                   color: AppTheme.darkText,
-                  fontSize: 20,
+                  fontSize: 19,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: -0.3,
+                  letterSpacing: -0.35,
                 ),
               ),
               const SizedBox(height: 2),
               Text(
-                deviceCount == 0
-                    ? 'No device linked yet'
-                    : '$deviceCount device${deviceCount == 1 ? '' : 's'} linked to your account',
+                subtitle,
                 style: const TextStyle(
                   color: AppTheme.lightText,
                   fontSize: 12,
@@ -620,61 +572,44 @@ class _DevicesSectionHeader extends StatelessWidget {
             ],
           ),
         ),
-        TextButton.icon(
-          onPressed: onAddDevice,
-          style: TextButton.styleFrom(
-            foregroundColor: AppTheme.primary,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        if (actionLabel != null && onAction != null)
+          TextButton.icon(
+            onPressed: onAction,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: Text(actionLabel!),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            ),
           ),
-          icon: const Icon(Icons.add_rounded, size: 18),
-          label: const Text(
-            'Add',
-            style: TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
       ],
     );
   }
 }
 
-class _DeviceOverviewCard extends StatelessWidget {
+class _DeviceCard extends StatelessWidget {
   final DeviceModel device;
   final VoidCallback onTap;
 
-  const _DeviceOverviewCard({
-    required this.device,
-    required this.onTap,
-  });
+  const _DeviceCard({required this.device, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final channel = device.channels['ch1'];
-    final timer = device.timers['ch1'];
-    final schedule = device.schedules['ch1'];
-
     final isOnline = device.isOnline;
     final isOn = channel?.state == true;
-    final timerActive = timer?.enabled == true;
-    final scheduleCount = schedule?.activeCount ?? 0;
-    final isAutomationActive = scheduleCount > 0;
+    final timerActive = device.timers['ch1']?.enabled == true;
+    final scheduleCount = device.schedules['ch1']?.activeCount ?? 0;
 
-    final stateColor = !isOnline
-        ? Colors.grey.shade600
+    final accent = !isOnline
+        ? const Color(0xFF7C879B)
         : isOn
-        ? Colors.green.shade700
+        ? AppTheme.success
         : AppTheme.primary;
-
-    final stateLabel = !isOnline
-        ? 'Offline'
+    final statusText = !isOnline
+        ? '${context.tr('Offline')} · ${device.lastSeenText}'
         : isOn
-        ? 'ON'
-        : 'OFF';
-
-    final stateDetail = !isOnline
-        ? 'Last seen ${device.lastSeenText}'
-        : isOn
-        ? 'Connected · Power is on'
-        : 'Connected · Ready to control';
+        ? context.tr('ON')
+        : context.tr('OFF');
 
     return Material(
       color: Colors.transparent,
@@ -686,112 +621,84 @@ class _DeviceOverviewCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: AppTheme.card,
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: stateColor.withOpacity(0.14)),
+            border: Border.all(color: AppTheme.outline),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.035),
+                color: Colors.black.withValues(alpha: 0.022),
                 blurRadius: 14,
                 offset: const Offset(0, 7),
               ),
             ],
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Row(
-                children: [
-                  Container(
-                    height: 48,
-                    width: 48,
-                    decoration: BoxDecoration(
-                      color: stateColor.withOpacity(0.11),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Icon(
-                      isOn
-                          ? Icons.lightbulb_rounded
-                          : Icons.power_settings_new_rounded,
-                      color: stateColor,
-                      size: 26,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          device.nickname,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppTheme.darkText,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          '${device.model} · ${device.channelCount} channel${device.channelCount == 1 ? '' : 's'}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppTheme.lightText,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    Icons.chevron_right_rounded,
-                    color: stateColor,
-                    size: 24,
-                  ),
-                ],
+              _DeviceIcon(
+                isOnline: isOnline,
+                isOn: isOn,
+                accent: accent,
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _StatePill(label: stateLabel, color: stateColor),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Text(
-                      stateDetail,
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      device.nickname,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppTheme.darkText,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${device.model} · ${device.channelCount} ch',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppTheme.lightText,
-                        fontSize: 11.5,
+                        fontSize: 12,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              if (timerActive || isAutomationActive) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: [
-                    if (timerActive)
-                      _DeviceTag(
-                        icon: Icons.timer_outlined,
-                        label: timer?.label.isNotEmpty == true
-                            ? timer!.label
-                            : 'Timer active',
-                        color: Colors.orange.shade800,
-                      ),
-                    if (isAutomationActive)
-                      _DeviceTag(
-                        icon: Icons.schedule_rounded,
-                        label: '$scheduleCount automation${scheduleCount == 1 ? '' : 's'}',
-                        color: Colors.deepPurple.shade600,
-                      ),
+                    const SizedBox(height: 9),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _DeviceStatusPill(
+                          icon: !isOnline
+                              ? Icons.wifi_off_rounded
+                              : isOn
+                              ? Icons.power_rounded
+                              : Icons.power_outlined,
+                          text: statusText,
+                          color: accent,
+                        ),
+                        if (timerActive)
+                          _DeviceStatusPill(
+                            icon: Icons.timer_outlined,
+                            text: context.tr('Timer active'),
+                            color: AppTheme.warning,
+                          ),
+                        if (scheduleCount > 0)
+                          _DeviceStatusPill(
+                            icon: Icons.schedule_rounded,
+                            text: context.l10n.scheduleCount(scheduleCount),
+                            color: AppTheme.automation,
+                          ),
+                      ],
+                    ),
                   ],
                 ),
-              ],
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: accent.withValues(alpha: 0.82),
+                size: 25,
+              ),
             ],
           ),
         ),
@@ -800,73 +707,90 @@ class _DeviceOverviewCard extends StatelessWidget {
   }
 }
 
-class _StatePill extends StatelessWidget {
-  final String label;
-  final Color color;
+class _DeviceIcon extends StatelessWidget {
+  final bool isOnline;
+  final bool isOn;
+  final Color accent;
 
-  const _StatePill({required this.label, required this.color});
+  const _DeviceIcon({
+    required this.isOnline,
+    required this.isOn,
+    required this.accent,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(99),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            height: 7,
-            width: 7,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          height: 50,
+          width: 50,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.11),
+            shape: BoxShape.circle,
           ),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
+          child: Icon(
+            isOn ? Icons.lightbulb_rounded : Icons.power_rounded,
+            color: accent,
+            size: 24,
+          ),
+        ),
+        Positioned(
+          right: -1,
+          bottom: -1,
+          child: Container(
+            height: 14,
+            width: 14,
+            decoration: BoxDecoration(
+              color: isOnline ? AppTheme.success : const Color(0xFF8B95A7),
+              shape: BoxShape.circle,
+              border: Border.all(color: AppTheme.card, width: 3),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
 
-class _DeviceTag extends StatelessWidget {
+class _DeviceStatusPill extends StatelessWidget {
   final IconData icon;
-  final String label;
+  final String text;
   final Color color;
 
-  const _DeviceTag({
+  const _DeviceStatusPill({
     required this.icon,
-    required this.label,
+    required this.text,
     required this.color,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      constraints: const BoxConstraints(maxWidth: 158),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(99),
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 14),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w800,
-              fontSize: 11,
+          Icon(icon, color: color, size: 13),
+          const SizedBox(width: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 124),
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],
@@ -875,169 +799,169 @@ class _DeviceTag extends StatelessWidget {
   }
 }
 
-class _EmptyDevicesCard extends StatelessWidget {
+/// A compact inline empty state keeps the dashboard useful without showing a
+/// large full-screen button. While empty, this is the only Add Device action.
+class _EmptyHomeCard extends StatelessWidget {
   final VoidCallback onAddDevice;
 
-  const _EmptyDevicesCard({required this.onAddDevice});
+  const _EmptyHomeCard({required this.onAddDevice});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         color: AppTheme.card,
         borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppTheme.outline),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 15,
-            offset: const Offset(0, 8),
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 14,
+            offset: const Offset(0, 7),
           ),
         ],
-      ),
-      child: Column(
-        children: [
-          Container(
-            height: 58,
-            width: 58,
-            decoration: BoxDecoration(
-              color: AppTheme.primary.withOpacity(0.10),
-              borderRadius: BorderRadius.circular(19),
-            ),
-            child: const Icon(
-              Icons.devices_other_rounded,
-              color: AppTheme.primary,
-              size: 31,
-            ),
-          ),
-          const SizedBox(height: 13),
-          const Text(
-            'No device linked yet',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppTheme.darkText,
-              fontSize: 18,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Add your Easy Home Control device using its Device ID and claim code.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppTheme.lightText,
-              fontSize: 12.5,
-              height: 1.35,
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: onAddDevice,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text(
-              'Add device',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AddAnotherDeviceCard extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _AddAnotherDeviceCard({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Ink(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
-          decoration: BoxDecoration(
-            color: AppTheme.card,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: AppTheme.primary.withOpacity(0.16)),
-          ),
-          child: const Row(
-            children: [
-              Icon(Icons.add_circle_outline_rounded, color: AppTheme.primary),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Add another device',
-                  style: TextStyle(
-                    color: AppTheme.darkText,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              Icon(Icons.arrow_forward_rounded, color: AppTheme.primary),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DashboardMessageCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String detail;
-
-  const _DashboardMessageCard({
-    required this.icon,
-    required this.title,
-    required this.detail,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.red.withOpacity(0.16)),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: Colors.redAccent),
+          Container(
+            height: 46,
+            width: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withValues(alpha: 0.10),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.add_home_outlined,
+              color: AppTheme.primary,
+              size: 23,
+            ),
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  title,
+                  context.tr('No devices yet'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppTheme.darkText,
+                    fontSize: 14.5,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
-                  detail,
+                  context.tr('Add your first smart switch to get started.'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppTheme.lightText,
-                    fontSize: 12.5,
-                    height: 1.3,
+                    fontSize: 11.5,
+                    height: 1.28,
                   ),
                 ),
               ],
             ),
           ),
+          const SizedBox(width: 8),
+          TextButton.icon(
+            onPressed: onAddDevice,
+            icon: const Icon(Icons.add_rounded, size: 17),
+            label: Text(context.tr('Add')),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 42),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 9),
+              backgroundColor: AppTheme.primary.withValues(alpha: 0.08),
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _LoadErrorCard extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _LoadErrorCard({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: const Color(0xFFF59E0B).withValues(alpha: 0.22),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.wifi_off_rounded, color: Color(0xFFD97706)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              context.tr('Could not load devices'),
+              style: const TextStyle(
+                color: AppTheme.darkText,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            child: Text(context.tr('Retry')),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeOverview {
+  final int total;
+  final int online;
+  final int active;
+  final int timerCount;
+  final int scheduleCount;
+
+  const _HomeOverview({
+    required this.total,
+    required this.online,
+    required this.active,
+    required this.timerCount,
+    required this.scheduleCount,
+  });
+
+  int get automationCount => timerCount + scheduleCount;
+
+  factory _HomeOverview.fromDevices(List<DeviceModel> devices) {
+    var online = 0;
+    var active = 0;
+    var timers = 0;
+    var schedules = 0;
+
+    for (final device in devices) {
+      if (device.isOnline) online++;
+      if (device.channels['ch1']?.state == true) active++;
+      if (device.timers['ch1']?.enabled == true) timers++;
+      schedules += device.schedules['ch1']?.activeCount ?? 0;
+    }
+
+    return _HomeOverview(
+      total: devices.length,
+      online: online,
+      active: active,
+      timerCount: timers,
+      scheduleCount: schedules,
     );
   }
 }
