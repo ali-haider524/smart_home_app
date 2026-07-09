@@ -175,7 +175,7 @@ class _EnergyEstimateSettingsScreenState
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text(
+                Text(
                   'Common examples',
                   style: TextStyle(
                     color: AppTheme.darkText,
@@ -219,7 +219,7 @@ class _EnergyEstimateSettingsScreenState
                   ),
                 ),
                 const SizedBox(height: 11),
-                const Text(
+                Text(
                   'One electricity unit equals 1 kWh. Your bill rate may vary by tariff, taxes, and slab.',
                   style: TextStyle(
                     color: AppTheme.lightText,
@@ -346,7 +346,7 @@ class _SectionTitle extends StatelessWidget {
       children: [
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             color: AppTheme.darkText,
             fontSize: 17,
             fontWeight: FontWeight.w900,
@@ -355,7 +355,7 @@ class _SectionTitle extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           subtitle,
-          style: const TextStyle(
+          style: TextStyle(
             color: AppTheme.lightText,
             fontSize: 13,
             height: 1.35,
@@ -431,7 +431,7 @@ class _EstimateNotice extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppTheme.warning.withValues(alpha: 0.18)),
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(Icons.info_outline_rounded, color: AppTheme.warning),

@@ -214,7 +214,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                 isLinking
                     ? 'Verify your mobile number'
                     : 'Use mobile verification',
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 25,
                   fontWeight: FontWeight.w900,
@@ -225,7 +225,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                 isLinking
                     ? 'After OTP verification, this number will be linked to your current Easy Home Control account.'
                     : 'Use this option when you prefer a one-time code instead of email and password.',
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   height: 1.45,
                 ),
@@ -243,7 +243,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                 onSubmitted: (_) => _sendOtp(),
               ),
               const SizedBox(height: 10),
-              const Text(
+              Text(
                 'Enter 0300 1234567, 3001234567, or +923001234567.',
                 style: TextStyle(
                   color: AppTheme.lightText,
@@ -271,7 +271,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               ),
               if (!isLinking) ...[
                 const SizedBox(height: 14),
-                const Text(
+                Text(
                   'Existing mobile accounts open after verification. New users can complete a mobile account, then add a recovery email later.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -282,7 +282,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                 ),
               ],
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'By continuing, you agree to receive a verification SMS. Standard SMS charges may apply.',
                 textAlign: TextAlign.center,
                 style: TextStyle(

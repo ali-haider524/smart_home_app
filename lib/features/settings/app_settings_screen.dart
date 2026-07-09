@@ -1,9 +1,11 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_appearance.dart';
 import '../../core/app_language.dart';
 import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
 import '../../services/auth_service.dart';
 import '../auth/link_email_screen.dart';
 import '../auth/login_screen.dart';
@@ -11,7 +13,10 @@ import '../auth/phone_auth_mode.dart';
 import '../auth/phone_auth_screen.dart';
 import '../devices/add_device_hub_screen.dart';
 import '../devices/archived_devices_screen.dart';
+import '../devices/device_list_screen.dart';
+import '../devices/reconnect_device_screen.dart';
 import 'support_center_screen.dart';
+import 'user_guide_screen.dart';
 
 /// Account, device and support settings for the signed-in customer.
 ///
@@ -36,21 +41,21 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Sign out?'),
-          content: const Text(
-            'You can sign in again using email sign-in or your verified mobile number. Your devices, schedules and WiFi settings will not be changed.',
+          title: Text(context.tr('Sign out?')),
+          content: Text(
+            context.tr('You can sign in again using email sign-in or your verified mobile number. Your devices, schedules and WiFi settings will not be changed.'),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
+              child: Text(context.tr('Cancel')),
             ),
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.red.shade700,
               ),
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Sign Out'),
+              child: Text(context.tr('Sign Out')),
             ),
           ],
         );
@@ -72,7 +77,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
     } catch (_) {
       if (mounted) {
         _showMessage(
-          'Could not sign out. Please try again.',
+          context.tr('Could not sign out. Please try again.'),
           type: AppNoticeType.error,
         );
       }
@@ -96,7 +101,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
 
     setState(() {});
     _showMessage(
-      'Mobile number verified and added to your account.',
+      context.tr('Mobile number verified and added to your account.'),
       type: AppNoticeType.success,
     );
   }
@@ -110,7 +115,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
 
     setState(() {});
     _showMessage(
-      'Recovery email added. Verify it from your inbox.',
+      context.tr('Recovery email added. Verify it from your inbox.'),
       type: AppNoticeType.success,
     );
   }
@@ -124,7 +129,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
       await _authService.sendEmailVerification();
       if (!mounted) return;
       _showMessage(
-        'Verification email sent. Check inbox and spam folder.',
+        context.tr('Verification email sent. Check inbox and spam folder.'),
         type: AppNoticeType.success,
       );
     } catch (error) {
@@ -153,12 +158,12 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
 
       if (user?.emailVerified == true) {
         _showMessage(
-          'Email verified successfully.',
+          context.tr('Email verified successfully.'),
           type: AppNoticeType.success,
         );
       } else {
         _showMessage(
-          'Email is still pending verification. Open the link in your email, then try again.',
+          context.tr('Email is still pending verification. Open the link in your email, then try again.'),
           type: AppNoticeType.warning,
         );
       }
@@ -185,6 +190,16 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
     );
   }
 
+  Future<void> _changeAppearance(AppAppearance appearance) async {
+    final persisted = await context.appearanceController.setAppearance(appearance);
+    if (!mounted || persisted) return;
+
+    _showMessage(
+      context.tr('Appearance changed for this session. It will be saved when your connection is available.'),
+      type: AppNoticeType.warning,
+    );
+  }
+
   void _openArchivedDevices() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const ArchivedDevicesScreen()),
@@ -197,9 +212,27 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
     );
   }
 
+  void _openDeviceManagement() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const DeviceListScreen()),
+    );
+  }
+
+  void _openDeviceWifi() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ReconnectDeviceScreen()),
+    );
+  }
+
   void _openSupport() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const SupportCenterScreen()),
+    );
+  }
+
+  void _openUserGuide() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const UserGuideScreen()),
     );
   }
 
@@ -214,13 +247,13 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
             size: 34,
           ),
           title: const Text('Easy Home Control'),
-          content: const Text(
-            'Control your connected switches, timers and weekly schedules from one secure account.\n\nThis app is currently being refined for its commercial release.',
+          content: Text(
+            context.tr('Control your connected switches, timers and weekly schedules from one secure account.\n\nThis app is currently being refined for its commercial release.'),
           ),
           actions: [
             FilledButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Done'),
+              child: Text(context.tr('Done')),
             ),
           ],
         );
@@ -237,6 +270,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final selectedLanguage = context.languageController.language;
+    final selectedAppearance = context.appearanceController.appearance;
     final user = FirebaseAuth.instance.currentUser;
     final displayName = (user?.displayName ?? '').trim();
     final email = (user?.email ?? '').trim();
@@ -248,7 +282,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
 
     final accountIdentity = hasEmail
         ? email
-        : (hasPhone ? phone : 'No verified sign-in method');
+        : (hasPhone ? phone : context.tr('No verified sign-in method'));
 
     final initialSource = displayName.isNotEmpty
         ? displayName
@@ -259,15 +293,15 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
 
     final accountProtected = hasPhone && hasEmail && emailVerified;
     final protectionTitle = !hasPhone
-        ? 'Add a mobile number'
+        ? context.tr('Add a mobile number')
         : (!hasEmail
-        ? 'Add a recovery email'
-        : 'Verify your recovery email');
+        ? context.tr('Add a recovery email')
+        : context.tr('Verify your recovery email'));
     final protectionSubtitle = !hasPhone
-        ? 'Use mobile verification as an extra way to sign in.'
+        ? context.tr('Use mobile verification as an extra way to sign in.')
         : (!hasEmail
-        ? 'Keep an email ready for account recovery.'
-        : 'Open the verification link sent to $email.');
+        ? context.tr('Keep an email ready for account recovery.')
+        : '${context.tr('Open the verification link sent to')} $email.');
 
     final VoidCallback protectionAction = !hasPhone
         ? _addPhoneNumber
@@ -287,7 +321,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
           _ProfileOverviewCard(
             initial: initial,
             displayName:
-            displayName.isEmpty ? 'Easy Home User' : displayName,
+            displayName.isEmpty ? context.tr('Easy Home User') : displayName,
             identity: accountIdentity,
             protected: accountProtected,
           ),
@@ -304,8 +338,8 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
           _SettingsSectionHeader(
             title: context.tr('Account security'),
             detail: accountProtected
-                ? 'Your sign-in and recovery options are ready.'
-                : 'Complete the items below to protect your account.',
+                ? context.tr('Your sign-in and recovery options are ready.')
+                : context.tr('Complete the items below to protect your account.'),
           ),
           const SizedBox(height: 10),
           _SettingsGroup(
@@ -316,15 +350,15 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
                     : Icons.phone_android_rounded,
                 iconColor: hasPhone ? AppTheme.success : AppTheme.primary,
                 title: hasPhone
-                    ? 'Mobile number verified'
-                    : 'Add mobile number',
+                    ? context.tr('Mobile number verified')
+                    : context.tr('Add mobile number'),
                 subtitle: hasPhone
                     ? phone
-                    : 'Add mobile verification for easier sign-in.',
+                    : context.tr('Add mobile verification for easier sign-in.'),
                 onTap: hasPhone ? null : _addPhoneNumber,
                 trailing: hasPhone
                     ? const _StatusCheck()
-                    : const Icon(
+                    : Icon(
                   Icons.chevron_right_rounded,
                   color: AppTheme.lightText,
                 ),
@@ -335,15 +369,15 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
                     : Icons.email_outlined,
                 iconColor: emailVerified ? AppTheme.success : AppTheme.primary,
                 title: !hasEmail
-                    ? 'Add recovery email'
+                    ? context.tr('Add recovery email')
                     : (emailVerified
-                    ? 'Recovery email verified'
-                    : 'Verify recovery email'),
+                    ? context.tr('Recovery email verified')
+                    : context.tr('Verify recovery email')),
                 subtitle: !hasEmail
-                    ? 'Add an email for sign-in and password recovery.'
+                    ? context.tr('Add an email for sign-in and password recovery.')
                     : (emailVerified
                     ? email
-                    : '$email • Verification pending'),
+                    : '$email • ${context.tr('Verification pending')}'),
                 onTap: !hasEmail
                     ? _addRecoveryEmail
                     : (emailVerified ? null : _sendEmailVerification),
@@ -355,10 +389,10 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
                       ? null
                       : _sendEmailVerification,
                   child: Text(
-                    _isSendingVerification ? 'Sending...' : 'Resend',
+                    _isSendingVerification ? context.tr('Sending...') : context.tr('Resend'),
                   ),
                 )
-                    : const Icon(
+                    : Icon(
                   Icons.chevron_right_rounded,
                   color: AppTheme.lightText,
                 )),
@@ -383,8 +417,8 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
                     : const Icon(Icons.refresh_rounded),
                 label: Text(
                   _isRefreshingVerification
-                      ? 'Checking verification...'
-                      : 'I have verified my email',
+                      ? context.tr('Checking verification...')
+                      : context.tr('I have verified my email'),
                 ),
               ),
             ),
@@ -403,6 +437,16 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
           ),
           const SizedBox(height: 26),
           _SettingsSectionHeader(
+            title: context.tr('Appearance'),
+            detail: context.tr('Choose a comfortable light or dark visual theme.'),
+          ),
+          const SizedBox(height: 10),
+          _AppearanceSelector(
+            selectedAppearance: selectedAppearance,
+            onChanged: _changeAppearance,
+          ),
+          const SizedBox(height: 26),
+          _SettingsSectionHeader(
             title: context.tr('My home'),
             detail: context.tr(
               'Manage the devices already connected to your account.',
@@ -412,11 +456,29 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
           _SettingsGroup(
             children: [
               _SettingsRow(
+                icon: Icons.devices_other_rounded,
+                iconColor: AppTheme.primaryDark,
+                title: context.tr('Device management'),
+                subtitle: context.tr(
+                  'Open a device, manage shared access, Wi-Fi, names and device settings.',
+                ),
+                onTap: _openDeviceManagement,
+              ),
+              _SettingsRow(
+                icon: Icons.wifi_tethering_rounded,
+                iconColor: const Color(0xFF0F766E),
+                title: context.tr('Device Wi-Fi & recovery'),
+                subtitle: context.tr(
+                  'Change home Wi-Fi or reconnect a switch after router changes.',
+                ),
+                onTap: _openDeviceWifi,
+              ),
+              _SettingsRow(
                 icon: Icons.add_home_work_outlined,
                 iconColor: AppTheme.primary,
-                title: context.tr('Add a smart switch'),
+                title: context.tr('Add or join a smart switch'),
                 subtitle: context.tr(
-                  'Pair another Easy Home Control device to this account.',
+                  'Set up a new switch or enter a share code from its owner.',
                 ),
                 onTap: _openAddDevice,
               ),
@@ -441,6 +503,15 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
           const SizedBox(height: 10),
           _SettingsGroup(
             children: [
+              _SettingsRow(
+                icon: Icons.menu_book_rounded,
+                iconColor: AppTheme.primary,
+                title: context.tr('User guide'),
+                subtitle: context.tr(
+                  'Step-by-step Wi-Fi setup, installation tips, and video guide.',
+                ),
+                onTap: _openUserGuide,
+              ),
               _SettingsRow(
                 icon: Icons.support_agent_rounded,
                 iconColor: const Color(0xFF0F766E),
@@ -502,28 +573,62 @@ class _SettingsPageHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: AppTheme.darkText,
-            fontSize: 26,
-            fontWeight: FontWeight.w900,
-            letterSpacing: -0.4,
+    final colorScheme = Theme.of(context).colorScheme;
+    final helperColor = colorScheme.onSurface.withValues(alpha: 0.68);
+
+    return TechPatternCard(
+      padding: const EdgeInsets.fromLTRB(16, 15, 15, 15),
+      radius: 24,
+      accent: AppTheme.primary,
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'EASY HOME CONTROL',
+                  style: TextStyle(
+                    color: AppTheme.primary,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: colorScheme.onSurface,
+                    fontSize: 25,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.45,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: helperColor,
+                    fontSize: 12.5,
+                    height: 1.32,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 5),
-        Text(
-          subtitle,
-          style: const TextStyle(
-            color: AppTheme.lightText,
-            fontSize: 14,
-            height: 1.35,
+          const SizedBox(width: 13),
+          const TechIconOrb(
+            icon: Icons.tune_rounded,
+            color: AppTheme.primary,
+            size: 48,
+            iconSize: 23,
+            borderRadius: BorderRadius.all(Radius.circular(16)),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -543,8 +648,9 @@ class _ProfileOverviewCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusText =
-    protected ? 'Account protected' : 'Protection needs attention';
+    final statusText = protected
+        ? context.tr('Account protected')
+        : context.tr('Protection needs attention');
 
     return Container(
       width: double.infinity,
@@ -659,6 +765,12 @@ class _AccountAttentionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final helperColor = colorScheme.onSurface.withValues(alpha: 0.70);
+    final shieldColor = Theme.of(context).brightness == Brightness.dark
+        ? const Color(0xFFBFD1FF)
+        : AppTheme.primaryDark;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 13, 10, 13),
       decoration: BoxDecoration(
@@ -677,9 +789,9 @@ class _AccountAttentionCard extends StatelessWidget {
               color: AppTheme.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.shield_outlined,
-              color: AppTheme.primaryDark,
+              color: shieldColor,
               size: 20,
             ),
           ),
@@ -690,8 +802,8 @@ class _AccountAttentionCard extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: AppTheme.darkText,
+                  style: TextStyle(
+                    color: colorScheme.onSurface,
                     fontSize: 13,
                     fontWeight: FontWeight.w900,
                   ),
@@ -701,8 +813,8 @@ class _AccountAttentionCard extends StatelessWidget {
                   subtitle,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppTheme.lightText,
+                  style: TextStyle(
+                    color: helperColor,
                     fontSize: 12,
                     height: 1.28,
                   ),
@@ -718,7 +830,7 @@ class _AccountAttentionCard extends StatelessWidget {
               width: 17,
               child: CircularProgressIndicator(strokeWidth: 2),
             )
-                : const Text('Review'),
+                : Text(context.tr('Review')),
           ),
         ],
       ),
@@ -737,13 +849,18 @@ class _SettingsSectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final detailColor = colorScheme.onSurface.withValues(
+      alpha: Theme.of(context).brightness == Brightness.dark ? 0.72 : 0.62,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           title,
-          style: const TextStyle(
-            color: AppTheme.darkText,
+          style: TextStyle(
+            color: colorScheme.onSurface,
             fontSize: 17,
             fontWeight: FontWeight.w900,
           ),
@@ -751,8 +868,8 @@ class _SettingsSectionHeader extends StatelessWidget {
         const SizedBox(height: 3),
         Text(
           detail,
-          style: const TextStyle(
-            color: AppTheme.lightText,
+          style: TextStyle(
+            color: detailColor,
             fontSize: 12,
             height: 1.3,
           ),
@@ -772,13 +889,20 @@ class _SettingsGroup extends StatelessWidget {
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: AppTheme.card,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppTheme.card,
+            AppTheme.primary.withValues(alpha: 0.025),
+          ],
+        ),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppTheme.outline.withValues(alpha: 0.78)),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.13)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.028),
-            blurRadius: 14,
+            color: AppTheme.primary.withValues(alpha: 0.04),
+            blurRadius: 15,
             offset: const Offset(0, 7),
           ),
         ],
@@ -815,12 +939,16 @@ class _SettingsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final helperColor = colorScheme.onSurface.withValues(
+      alpha: Theme.of(context).brightness == Brightness.dark ? 0.70 : 0.60,
+    );
     final resolvedTrailing = trailing ??
         (onTap == null
             ? const SizedBox(width: 8)
-            : const Icon(
+            : Icon(
           Icons.chevron_right_rounded,
-          color: AppTheme.lightText,
+          color: helperColor,
         ));
 
     return Material(
@@ -831,14 +959,12 @@ class _SettingsRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           child: Row(
             children: [
-              Container(
-                height: 42,
-                width: 42,
-                decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(icon, color: iconColor, size: 21),
+              TechIconOrb(
+                icon: icon,
+                color: iconColor,
+                size: 42,
+                iconSize: 21,
+                borderRadius: BorderRadius.circular(14),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -849,8 +975,8 @@ class _SettingsRow extends StatelessWidget {
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppTheme.darkText,
+                      style: TextStyle(
+                        color: colorScheme.onSurface,
                         fontSize: 14,
                         fontWeight: FontWeight.w800,
                       ),
@@ -860,8 +986,8 @@ class _SettingsRow extends StatelessWidget {
                       subtitle,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppTheme.lightText,
+                      style: TextStyle(
+                        color: helperColor,
                         fontSize: 12,
                         height: 1.25,
                       ),
@@ -895,6 +1021,152 @@ class _StatusCheck extends StatelessWidget {
         Icons.check_rounded,
         color: AppTheme.success,
         size: 18,
+      ),
+    );
+  }
+}
+
+class _AppearanceSelector extends StatelessWidget {
+  final AppAppearance selectedAppearance;
+  final ValueChanged<AppAppearance> onChanged;
+
+  const _AppearanceSelector({
+    required this.selectedAppearance,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppTheme.card,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppTheme.outline),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.primary.withValues(alpha: 0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _AppearanceOption(
+              icon: Icons.light_mode_rounded,
+              title: context.tr('Light'),
+              subtitle: context.tr('Clean and bright'),
+              selected: selectedAppearance == AppAppearance.light,
+              onTap: () => onChanged(AppAppearance.light),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _AppearanceOption(
+              icon: Icons.dark_mode_rounded,
+              title: context.tr('Dark'),
+              subtitle: context.tr('Easy at night'),
+              selected: selectedAppearance == AppAppearance.dark,
+              onTap: () => onChanged(AppAppearance.dark),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AppearanceOption extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _AppearanceOption({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final helperColor = colorScheme.onSurface.withValues(
+      alpha: Theme.of(context).brightness == Brightness.dark ? 0.70 : 0.60,
+    );
+    final color = selected ? AppTheme.primary : helperColor;
+
+    return Material(
+      color: selected
+          ? AppTheme.primary.withValues(alpha: AppTheme.isDarkMode ? 0.24 : 0.10)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected
+                  ? AppTheme.primary.withValues(alpha: 0.36)
+                  : Colors.transparent,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                height: 34,
+                width: 34,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: selected ? 0.15 : 0.10),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Icon(icon, color: color, size: 19),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: selected ? AppTheme.primary : colorScheme.onSurface,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        color: helperColor,
+                        fontSize: 10.5,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (selected)
+                const Icon(
+                  Icons.check_circle_rounded,
+                  color: AppTheme.primary,
+                  size: 19,
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -965,7 +1237,13 @@ class _LanguageOption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconColor = selected ? AppTheme.primaryDark : AppTheme.lightText;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final selectedColor = isDark ? const Color(0xFFBFD1FF) : AppTheme.primaryDark;
+    final helperColor = colorScheme.onSurface.withValues(
+      alpha: isDark ? 0.70 : 0.60,
+    );
+    final iconColor = selected ? selectedColor : helperColor;
 
     return Material(
       color: selected
@@ -1004,9 +1282,7 @@ class _LanguageOption extends StatelessWidget {
                     Text(
                       title,
                       style: TextStyle(
-                        color: selected
-                            ? AppTheme.primaryDark
-                            : AppTheme.darkText,
+                        color: selected ? selectedColor : colorScheme.onSurface,
                         fontSize: 13,
                         fontWeight: FontWeight.w900,
                       ),
@@ -1014,8 +1290,8 @@ class _LanguageOption extends StatelessWidget {
                     const SizedBox(height: 1),
                     Text(
                       subtitle,
-                      style: const TextStyle(
-                        color: AppTheme.lightText,
+                      style: TextStyle(
+                        color: helperColor,
                         fontSize: 11,
                       ),
                     ),

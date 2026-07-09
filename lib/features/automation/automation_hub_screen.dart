@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_language.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
 import '../../models/device_model.dart';
 import '../../models/schedule_model.dart';
 import '../../models/timer_model.dart';
@@ -378,62 +379,70 @@ class _AutomationHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'EASY HOME CONTROL',
-                style: TextStyle(
-                  color: AppTheme.primary,
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0.9,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: AppTheme.darkText,
-                  fontSize: 25,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.7,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                subtitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppTheme.lightText,
-                  fontSize: 12.5,
-                  height: 1.3,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 14),
-        Container(
-          height: 48,
-          width: 48,
-          decoration: BoxDecoration(
-            color: AppTheme.card,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppTheme.outline),
-          ),
-          child: const Icon(
-            Icons.auto_awesome_rounded,
-            color: AppTheme.primary,
-            size: 23,
-          ),
-        ),
+    return TechHeroSurface(
+      padding: const EdgeInsets.fromLTRB(18, 17, 16, 17),
+      colors: const [
+        Color(0xFF33246F),
+        AppTheme.automation,
+        AppTheme.primary,
       ],
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'EASY HOME CONTROL',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.77),
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.9,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.7,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.77),
+                    fontSize: 12.5,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          Container(
+            height: 48,
+            width: 48,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            ),
+            child: const Icon(
+              Icons.auto_awesome_rounded,
+              color: Colors.white,
+              size: 23,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -514,7 +523,7 @@ class _CountCard extends StatelessWidget {
               children: [
                 Text(
                   value,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 19,
                     fontWeight: FontWeight.w900,
@@ -524,7 +533,7 @@ class _CountCard extends StatelessWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 11.5,
                     fontWeight: FontWeight.w800,
@@ -535,7 +544,7 @@ class _CountCard extends StatelessWidget {
                   detail,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.lightText,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w600,
@@ -581,7 +590,7 @@ class _SectionHeader extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 16.5,
                   fontWeight: FontWeight.w900,
@@ -592,7 +601,7 @@ class _SectionHeader extends StatelessWidget {
                 detail,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   fontSize: 11.5,
                   fontWeight: FontWeight.w600,
@@ -715,7 +724,7 @@ class _AutomationItemCard extends StatelessWidget {
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.darkText,
                         fontSize: 15,
                         fontWeight: FontWeight.w900,
@@ -726,7 +735,7 @@ class _AutomationItemCard extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.lightText,
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
@@ -826,7 +835,7 @@ class _AutomationSetupCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 15,
                     fontWeight: FontWeight.w900,
@@ -838,7 +847,7 @@ class _AutomationSetupCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             detail,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.lightText,
               fontSize: 12,
               height: 1.32,
@@ -891,7 +900,7 @@ class _MessageCard extends StatelessWidget {
           Text(
             title,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.darkText,
               fontSize: 17,
               fontWeight: FontWeight.w900,
@@ -901,7 +910,7 @@ class _MessageCard extends StatelessWidget {
           Text(
             detail,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.lightText,
               fontSize: 12,
               height: 1.35,
@@ -924,7 +933,7 @@ class _DevicePickerSheet extends StatelessWidget {
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: AppTheme.background,
           borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         ),
@@ -940,7 +949,7 @@ class _DevicePickerSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 17),
-            const Text(
+            Text(
               'Choose a device',
               style: TextStyle(
                 color: AppTheme.darkText,
@@ -952,7 +961,7 @@ class _DevicePickerSheet extends StatelessWidget {
             Text(
               context.tr('Open a device to set when its switch should turn on and off.'),
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
                 height: 1.3,
@@ -1031,7 +1040,7 @@ class _DevicePickerRow extends StatelessWidget {
                       device.nickname,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.darkText,
                         fontSize: 14,
                         fontWeight: FontWeight.w900,
@@ -1042,7 +1051,7 @@ class _DevicePickerRow extends StatelessWidget {
                       '${device.model} · ${device.channelCount} ${device.channelCount == 1 ? 'switch' : 'switches'}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.lightText,
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
@@ -1086,13 +1095,22 @@ class _DevicePickerRow extends StatelessWidget {
 
 BoxDecoration _softCardDecoration({Color? borderColor}) {
   return BoxDecoration(
-    color: AppTheme.card,
+    gradient: LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        AppTheme.card,
+        AppTheme.primary.withValues(alpha: 0.025),
+      ],
+    ),
     borderRadius: BorderRadius.circular(22),
-    border: Border.all(color: borderColor ?? AppTheme.outline),
+    border: Border.all(
+      color: borderColor ?? AppTheme.primary.withValues(alpha: 0.13),
+    ),
     boxShadow: [
       BoxShadow(
-        color: Colors.black.withOpacity(0.035),
-        blurRadius: 14,
+        color: AppTheme.primary.withValues(alpha: 0.045),
+        blurRadius: 15,
         offset: const Offset(0, 7),
       ),
     ],

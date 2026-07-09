@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
 import '../../services/auth_service.dart';
 import 'account_protection_screen.dart';
 import 'login_screen.dart';
@@ -112,13 +113,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
+  void _openLogin() {
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -126,131 +135,109 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 alignment: Alignment.centerLeft,
                 child: IconButton(
                   tooltip: 'Back',
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: isLoading ? null : () => Navigator.pop(context),
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
               ),
-              const SizedBox(height: 12),
-              const AuthHeader(
-                title: 'Create Account',
-                subtitle: 'Securely connect and manage your smart home devices.',
-              ),
-              const SizedBox(height: 30),
-              TextField(
-                controller: nameController,
-                textCapitalization: TextCapitalization.words,
-                autofillHints: const [AutofillHints.name],
-                decoration: const InputDecoration(
-                  hintText: 'Full name',
-                  prefixIcon: Icon(Icons.person_outline),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: emailController,
-                keyboardType: TextInputType.emailAddress,
-                autofillHints: const [AutofillHints.email],
-                decoration: const InputDecoration(
-                  hintText: 'Email address',
-                  prefixIcon: Icon(Icons.email_outlined),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: passwordController,
-                obscureText: hidePassword,
-                autofillHints: const [AutofillHints.newPassword],
-                decoration: InputDecoration(
-                  hintText: 'Create password',
-                  prefixIcon: const Icon(Icons.lock_outline),
-                  suffixIcon: IconButton(
-                    onPressed: () {
-                      setState(() => hidePassword = !hidePassword);
-                    },
-                    icon: Icon(
-                      hidePassword
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
-                    ),
-                  ),
-                ),
-                onSubmitted: (_) {
-                  if (!isLoading) createAccount();
-                },
-              ),
-              const SizedBox(height: 26),
-              SizedBox(
-                height: 58,
-                child: FilledButton(
-                  onPressed: isLoading ? null : createAccount,
-                  child: isLoading
-                      ? const SizedBox(
-                    height: 22,
-                    width: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                      : const Text(
-                    'Create Account',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text(
-                    'Already have an account?',
-                    style: TextStyle(color: AppTheme.lightText),
-                  ),
-                  TextButton(
-                    onPressed: isLoading
-                        ? null
-                        : () {
-                      Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(
-                          builder: (_) => const LoginScreen(),
-                        ),
-                            (route) => false,
-                      );
-                    },
-                    child: const Text('Sign in'),
-                  ),
-                ],
-              ),
               const SizedBox(height: 8),
-              Center(
-                child: TextButton(
-                  onPressed: isLoading ? null : _openMobileVerification,
-                  style: TextButton.styleFrom(
-                    foregroundColor: AppTheme.primaryDark,
-                    minimumSize: const Size(48, 44),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
+              const AuthHeader(
+                title: 'Create your account',
+                subtitle:
+                'Keep your devices, schedules and settings in one secure place.',
+                compact: true,
+              ),
+              const SizedBox(height: 24),
+              _RegisterSurface(
+                child: AutofillGroup(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        'Prefer mobile? Use mobile verification',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
+                      TextField(
+                        controller: nameController,
+                        textCapitalization: TextCapitalization.words,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.name],
+                        decoration: const InputDecoration(
+                          labelText: 'Full name',
+                          hintText: 'Your name',
+                          prefixIcon: Icon(Icons.person_outline_rounded),
                         ),
                       ),
-                      SizedBox(width: 6),
-                      Icon(Icons.arrow_forward_rounded, size: 17),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.email],
+                        decoration: const InputDecoration(
+                          labelText: 'Email address',
+                          hintText: 'name@example.com',
+                          prefixIcon: Icon(Icons.email_outlined),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: passwordController,
+                        obscureText: hidePassword,
+                        textInputAction: TextInputAction.done,
+                        autofillHints: const [AutofillHints.newPassword],
+                        decoration: InputDecoration(
+                          labelText: 'Create password',
+                          hintText: 'At least 6 characters',
+                          prefixIcon: const Icon(Icons.lock_outline_rounded),
+                          suffixIcon: IconButton(
+                            tooltip: hidePassword
+                                ? 'Show password'
+                                : 'Hide password',
+                            onPressed: () {
+                              setState(() => hidePassword = !hidePassword);
+                            },
+                            icon: Icon(
+                              hidePassword
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                            ),
+                          ),
+                        ),
+                        onSubmitted: (_) {
+                          if (!isLoading) createAccount();
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      const _AccountNote(),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        height: 54,
+                        child: FilledButton.icon(
+                          onPressed: isLoading ? null : createAccount,
+                          icon: isLoading
+                              ? const SizedBox(
+                            height: 19,
+                            width: 19,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                              : const Icon(Icons.person_add_alt_1_rounded),
+                          label: Text(
+                            isLoading ? 'Creating account...' : 'Create account',
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: isLoading ? null : _openMobileVerification,
+                icon: const Icon(Icons.phone_android_rounded),
+                label: const Text('Use mobile verification instead'),
+              ),
+              const SizedBox(height: 9),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 18),
                 child: Text(
                   'Verify your number with a one-time code, then add a recovery email later.',
                   textAlign: TextAlign.center,
@@ -261,9 +248,74 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Already have an account?',
+                    style: TextStyle(color: AppTheme.lightText),
+                  ),
+                  TextButton(
+                    onPressed: isLoading ? null : _openLogin,
+                    child: const Text('Sign in'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _RegisterSurface extends StatelessWidget {
+  final Widget child;
+
+  const _RegisterSurface({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TechPatternCard(
+      padding: const EdgeInsets.all(18),
+      radius: 24,
+      child: child,
+    );
+  }
+}
+
+class _AccountNote extends StatelessWidget {
+  const _AccountNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceSoft,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline_rounded,
+            color: AppTheme.primary,
+            size: 19,
+          ),
+          SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              'You can verify your email and add mobile sign-in after creating your account.',
+              style: TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

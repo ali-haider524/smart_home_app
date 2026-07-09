@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/app_language.dart';
 import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
+import '../../models/device_access.dart';
 import '../../models/device_model.dart';
 import '../../models/energy_estimate.dart';
 import '../../models/schedule_model.dart';
@@ -40,10 +42,13 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
   final DeviceService deviceService = DeviceService();
   late String _deviceName;
   late final Stream<EnergyEstimateSettings> _energySettingsStream;
+  late final Stream<DeviceAccessInfo> _deviceAccessStream;
 
   // Cloud control is intentionally confirmed only from the ESP-reported
-  // /state value. The app never flips the UI optimistically.
-  static const Duration _commandConfirmationTimeout = Duration(seconds: 8);
+  // /state value. The app never flips the UI optimistically. A small grace
+  // window absorbs normal Wi-Fi/TLS scheduling delay without showing a false
+  // failure while the ESP is still publishing the physical relay state.
+  static const Duration _commandConfirmationTimeout = Duration(seconds: 15);
   Timer? _commandConfirmationTimer;
   bool _commandPending = false;
   bool? _requestedRelayState;
@@ -75,6 +80,8 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
         : widget.deviceName.trim();
     _energySettingsStream =
         deviceService.listenEnergyEstimateSettings(widget.deviceId);
+    _deviceAccessStream =
+        deviceService.listenCurrentUserDeviceAccess(widget.deviceId);
   }
 
   @override
@@ -120,7 +127,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
           _clearPendingPowerCommand();
           showMessage(
             context.tr(
-              'Device did not confirm the command. Check its connection and try again.',
+              'The switch did not confirm this command. Check its connection and current state before trying again.',
             ),
             type: AppNoticeType.error,
           );
@@ -343,6 +350,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
           builder: (_) => WifiSetupScreen(
             deviceId: widget.deviceId,
             deviceName: _deviceName,
+            recoveryMode: result.openWiFiRecovery,
           ),
         ),
       );
@@ -361,7 +369,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
           _deviceName,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
+          style: TextStyle(
             color: AppTheme.darkText,
             fontSize: 20,
             fontWeight: FontWeight.w900,
@@ -401,54 +409,72 @@ class _DeviceControlScreenState extends State<DeviceControlScreen> {
 
               _queuePowerConfirmation(state);
 
-              return ListView(
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 34),
-                children: [
-                  _PowerControlCard(
-                    online: online,
-                    state: state,
-                    lastSeenText: device.lastSeenText,
-                    commandPending: _commandPending,
-                    requestedState: _requestedRelayState,
-                    onTap: online && !_commandPending
-                        ? () => _sendPowerCommand(state)
-                        : null,
-                  ),
-                  const SizedBox(height: 18),
-                  _QuickTimerPanel(
-                    timer: timer,
-                    onOpenTimer: () => _openTimerSheet(timer),
-                    onQuickTimer: (minutes) =>
-                        _openTimerSheet(timer, initialMinutes: minutes),
-                  ),
-                  const SizedBox(height: 12),
-                  _SimpleActionCard(
-                    icon: Icons.calendar_month_outlined,
-                    iconColor: AppTheme.automation,
-                    title: 'Schedules',
-                    subtitle: activeScheduleCount == 0
-                        ? 'Set automatic ON/OFF times'
-                        : '$activeScheduleCount active ${activeScheduleCount == 1 ? 'schedule' : 'schedules'}',
-                    actionLabel: activeScheduleCount == 0 ? 'Set up' : 'Manage',
-                    onTap: () => openScheduleManager(schedules),
-                  ),
-                  const SizedBox(height: 12),
-                  StreamBuilder<EnergyEstimateSettings>(
-                    stream: _energySettingsStream,
-                    builder: (context, energySnapshot) {
-                      final settings = energySnapshot.data ??
-                          EnergyEstimateSettings.empty;
-                      return _EnergyEstimateSummaryCard(
-                        settings: settings,
+              return StreamBuilder<DeviceAccessInfo>(
+                stream: _deviceAccessStream,
+                initialData: DeviceAccessInfo.empty(widget.deviceId),
+                builder: (context, accessSnapshot) {
+                  final isOwner = accessSnapshot.data?.isOwner ?? false;
+
+                  return ListView(
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 34),
+                    children: [
+                      _PowerControlCard(
+                        online: online,
+                        state: state,
+                        lastSeenText: device.lastSeenText,
+                        commandPending: _commandPending,
+                        requestedState: _requestedRelayState,
+                        onTap: online && !_commandPending
+                            ? () => _sendPowerCommand(state)
+                            : null,
+                      ),
+                      const SizedBox(height: 18),
+                      _QuickTimerPanel(
                         timer: timer,
-                        onTap: _openEnergyEstimateSettings,
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 14),
-                  _DeviceDetailsCard(device: device),
-                ],
+                        onOpenTimer: () => _openTimerSheet(timer),
+                        onQuickTimer: (minutes) =>
+                            _openTimerSheet(timer, initialMinutes: minutes),
+                      ),
+                      const SizedBox(height: 12),
+                      _SimpleActionCard(
+                        icon: Icons.calendar_month_outlined,
+                        iconColor: AppTheme.automation,
+                        title: context.tr('Schedules'),
+                        subtitle: isOwner
+                            ? (activeScheduleCount == 0
+                            ? context.tr('Set automatic ON/OFF times')
+                            : '$activeScheduleCount active ${activeScheduleCount == 1 ? 'schedule' : 'schedules'}')
+                            : (activeScheduleCount == 0
+                            ? context.tr('No active schedules set by the owner')
+                            : '$activeScheduleCount active ${activeScheduleCount == 1 ? 'schedule' : 'schedules'}'),
+                        actionLabel: isOwner
+                            ? (activeScheduleCount == 0 ? context.tr('Set up') : context.tr('Manage'))
+                             : context.tr('Owner only'),
+                        onTap: isOwner
+                            ? () => openScheduleManager(schedules)
+                            : () => showMessage(
+                          context.tr('Only the device owner can change schedules.'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      StreamBuilder<EnergyEstimateSettings>(
+                        stream: _energySettingsStream,
+                        builder: (context, energySnapshot) {
+                          final settings = energySnapshot.data ??
+                              EnergyEstimateSettings.empty;
+                          return _EnergyEstimateSummaryCard(
+                            settings: settings,
+                            timer: timer,
+                            onTap: _openEnergyEstimateSettings,
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      _DeviceDetailsCard(device: device),
+                    ],
+                  );
+                },
               );
             },
           );
@@ -557,20 +583,10 @@ class _PowerControlCard extends StatelessWidget {
         ? context.tr('Tap the button to turn it off')
         : context.tr('Tap the button to turn it on');
 
-    return Container(
+    return TechPatternCard(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: accent.withOpacity(0.16)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
+      radius: 26,
+      accent: accent,
       child: Column(
         children: [
           Row(
@@ -585,7 +601,7 @@ class _PowerControlCard extends StatelessWidget {
                 online
                     ? context.tr('Ready')
                     : '${context.tr('Last seen')} $lastSeenText',
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -629,12 +645,20 @@ class _PowerControlCard extends StatelessWidget {
                         width: 82,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: accent,
+                          gradient: RadialGradient(
+                            center: const Alignment(-0.35, -0.4),
+                            colors: [
+                              AppTheme.electric.withOpacity(
+                                online ? 0.86 : 0.44,
+                              ),
+                              accent,
+                            ],
+                          ),
                           boxShadow: [
                             BoxShadow(
-                              color: accent.withOpacity(0.24),
-                              blurRadius: 14,
-                              offset: const Offset(0, 7),
+                              color: accent.withOpacity(0.26),
+                              blurRadius: 17,
+                              offset: const Offset(0, 8),
                             ),
                           ],
                         ),
@@ -667,7 +691,7 @@ class _PowerControlCard extends StatelessWidget {
           Text(
             title,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.darkText,
               fontSize: 18,
               fontWeight: FontWeight.w900,
@@ -677,7 +701,7 @@ class _PowerControlCard extends StatelessWidget {
           Text(
             detail,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.lightText,
               fontSize: 12,
               height: 1.3,
@@ -757,7 +781,7 @@ class _PanelHeading extends StatelessWidget {
         const SizedBox(width: 9),
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             color: AppTheme.darkText,
             fontSize: 16,
             fontWeight: FontWeight.w900,
@@ -805,8 +829,8 @@ class _QuickTimerPanel extends StatelessWidget {
         children: [
           _PanelHeading(
             icon: Icons.timer_outlined,
-            title: 'Quick timer',
-            actionLabel: running ? 'Manage' : 'All options',
+            title: context.tr('Quick timer'),
+            actionLabel: running ? context.tr('Manage') : context.tr('All options'),
             onAction: onOpenTimer,
           ),
           const SizedBox(height: 11),
@@ -839,8 +863,8 @@ class _QuickTimerPanel extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'Timer is active',
+                            Text(
+                              context.tr('Timer is active'),
                               style: TextStyle(
                                 color: AppTheme.darkText,
                                 fontSize: 13,
@@ -850,7 +874,7 @@ class _QuickTimerPanel extends StatelessWidget {
                             const SizedBox(height: 1),
                             Text(
                               activeLabel,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 color: AppTheme.lightText,
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
@@ -859,7 +883,7 @@ class _QuickTimerPanel extends StatelessWidget {
                           ],
                         ),
                       ),
-                      const Icon(
+                      Icon(
                         Icons.chevron_right_rounded,
                         color: AppTheme.lightText,
                       ),
@@ -870,10 +894,10 @@ class _QuickTimerPanel extends StatelessWidget {
             ),
             const SizedBox(height: 11),
           ] else
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 1, bottom: 10),
               child: Text(
-                'Turn the switch off automatically after',
+                context.tr('Turn the switch off automatically after'),
                 style: TextStyle(
                   color: AppTheme.lightText,
                   fontSize: 12,
@@ -897,7 +921,7 @@ class _QuickTimerPanel extends StatelessWidget {
                     padding: EdgeInsets.zero,
                     minimumSize: const Size(0, 42),
                   ),
-                  child: const Text('More'),
+                  child: Text(context.tr('More')),
                 ),
               ),
             ],
@@ -981,7 +1005,7 @@ class _SimpleActionCard extends StatelessWidget {
                   children: [
                     Text(
                       title,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.darkText,
                         fontSize: 14,
                         fontWeight: FontWeight.w900,
@@ -992,7 +1016,7 @@ class _SimpleActionCard extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.lightText,
                         fontSize: 12,
                       ),
@@ -1044,8 +1068,8 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
         : null;
     final timerLabel = activeTimer
         ? (timer!.label.trim().isNotEmpty
-            ? timer!.label.trim()
-            : _durationLabel(timer!.durationMinutes))
+        ? timer!.label.trim()
+        : _durationLabel(timer!.durationMinutes))
         : null;
 
     return Material(
@@ -1076,12 +1100,12 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Estimated energy',
+                          context.tr('Estimated energy'),
                           style: TextStyle(
                             color: AppTheme.darkText,
                             fontSize: 14,
@@ -1090,7 +1114,7 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'Approximation from wattage and time',
+                          context.tr('Approximation from wattage and time'),
                           style: TextStyle(
                             color: AppTheme.lightText,
                             fontSize: 12,
@@ -1105,8 +1129,8 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                       color: AppTheme.warning.withOpacity(0.10),
                       borderRadius: BorderRadius.circular(99),
                     ),
-                    child: const Text(
-                      'Estimate only',
+                    child: Text(
+                      context.tr('Estimate only'),
                       style: TextStyle(
                         color: AppTheme.warning,
                         fontSize: 10,
@@ -1124,19 +1148,19 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _EnergyStat(
-                        label: 'Appliance',
+                        label: context.tr('Appliance'),
                         value: '${settings.ratedWatts} W',
-                        detail: 'Power rating',
+                        detail: context.tr('Power rating'),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: _EnergyStat(
-                        label: 'Per hour',
+                        label: context.tr('Per hour'),
                         value: perHour!.energyLabel,
                         detail: perHour.costLabel == null
-                            ? 'Cost not set'
-                            : '${perHour.costLabel} / hour',
+                            ? context.tr('Cost not set')
+                            : '${perHour.costLabel} / ${context.tr('hour')}',
                       ),
                     ),
                   ],
@@ -1159,10 +1183,10 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Timer total · $timerLabel',
+                            '${context.tr('Timer total')} · $timerLabel',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               color: AppTheme.darkText,
                               fontSize: 12,
                               fontWeight: FontWeight.w800,
@@ -1199,7 +1223,7 @@ class _EnergyEstimateSummaryCard extends StatelessWidget {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     icon: const Icon(Icons.tune_rounded, size: 17),
-                    label: const Text('Edit estimate'),
+                    label: Text(context.tr('Edit estimate')),
                   ),
                 ),
               ],
@@ -1226,9 +1250,9 @@ class _EnergySetupPrompt extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Expanded(
+          Expanded(
             child: Text(
-              'Add appliance watts to see hourly and timer estimates.',
+              context.tr('Add appliance watts to see hourly and timer estimates.'),
               style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
@@ -1244,7 +1268,7 @@ class _EnergySetupPrompt extends StatelessWidget {
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
-            child: const Text('Set up'),
+            child: Text(context.tr('Set up')),
           ),
         ],
       ),
@@ -1276,7 +1300,7 @@ class _EnergyStat extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.lightText,
               fontSize: 11,
               fontWeight: FontWeight.w700,
@@ -1285,7 +1309,7 @@ class _EnergyStat extends StatelessWidget {
           const SizedBox(height: 3),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.darkText,
               fontSize: 15,
               fontWeight: FontWeight.w900,
@@ -1296,7 +1320,7 @@ class _EnergyStat extends StatelessWidget {
             detail,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppTheme.lightText,
               fontSize: 10,
             ),
@@ -1338,8 +1362,8 @@ class _DeviceDetailsCard extends StatelessWidget {
                 size: 21,
               ),
             ),
-            title: const Text(
-              'Device details',
+            title: Text(
+              context.tr('Device details'),
               style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 14,
@@ -1348,20 +1372,20 @@ class _DeviceDetailsCard extends StatelessWidget {
             ),
             subtitle: Text(
               '${device.model} · ${device.firmwareVersion}',
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
               ),
             ),
             children: [
-              _DeviceDetailLine(label: 'Device ID', value: device.id),
-              _DeviceDetailLine(label: 'Model', value: device.model),
-              _DeviceDetailLine(label: 'Firmware', value: device.firmwareVersion),
+              _DeviceDetailLine(label: context.tr('Device ID'), value: device.id),
+              _DeviceDetailLine(label: context.tr('Model'), value: device.model),
+              _DeviceDetailLine(label: context.tr('Firmware'), value: device.firmwareVersion),
               _DeviceDetailLine(
-                label: 'Channels',
-                value: '${device.channelCount} channel${device.channelCount == 1 ? '' : 's'}',
+                label: context.tr('Channels'),
+                value: '${device.channelCount} ${device.channelCount == 1 ? context.tr('channel') : context.tr('channels')}',
               ),
-              _DeviceDetailLine(label: 'Last seen', value: device.lastSeenText),
+              _DeviceDetailLine(label: context.tr('Last seen'), value: device.lastSeenText),
             ],
           ),
         ),
@@ -1387,7 +1411,7 @@ class _DeviceDetailLine extends StatelessWidget {
             width: 80,
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
@@ -1399,7 +1423,7 @@ class _DeviceDetailLine extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.right,
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 12,
                 fontWeight: FontWeight.w800,
@@ -1539,7 +1563,7 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
           20,
           20 + MediaQuery.viewInsetsOf(context).bottom,
         ),
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: AppTheme.background,
           borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
         ),
@@ -1561,12 +1585,12 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
               const SizedBox(height: 16),
               Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Set timer',
+                          context.tr('Set timer'),
                           style: TextStyle(
                             color: AppTheme.darkText,
                             fontSize: 22,
@@ -1575,7 +1599,7 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                         ),
                         SizedBox(height: 3),
                         Text(
-                          'The switch will turn off automatically.',
+                          context.tr('The switch will turn off automatically.'),
                           style: TextStyle(
                             color: AppTheme.lightText,
                             fontSize: 13,
@@ -1601,8 +1625,8 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                 ),
               ],
               const SizedBox(height: 20),
-              const Text(
-                'Quick choices',
+              Text(
+                context.tr('Quick choices'),
                 style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 14,
@@ -1622,8 +1646,8 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                 }).toList(),
               ),
               const SizedBox(height: 20),
-              const Text(
-                'More hour choices',
+              Text(
+                context.tr('More hour choices'),
                 style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 14,
@@ -1646,7 +1670,7 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
               OutlinedButton.icon(
                 onPressed: _submitting ? null : _chooseCustom,
                 icon: const Icon(Icons.edit_outlined, size: 19),
-                label: const Text('Use custom minutes'),
+                label: Text(context.tr('Use custom minutes')),
               ),
               if (_customMode) ...[
                 const SizedBox(height: 10),
@@ -1656,19 +1680,19 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                   enabled: !_submitting,
                   keyboardType: TextInputType.number,
                   onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(
-                    labelText: 'Custom duration',
-                    hintText: 'Example: 45 or 120',
-                    suffixText: 'minutes',
-                    prefixIcon: Icon(Icons.timer_outlined),
+                  decoration: InputDecoration(
+                    labelText: context.tr('Custom duration'),
+                    hintText: context.tr('Example: 45 or 120'),
+                    suffixText: context.tr('minutes'),
+                    prefixIcon: const Icon(Icons.timer_outlined),
                   ),
                 ),
               ],
               if (_customMode && _customMinutes != null && _customMinutes! > 1440)
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Maximum timer allowed is 24 hours.',
+                    context.tr('Maximum timer allowed is 24 hours.'),
                     style: TextStyle(
                       color: Colors.redAccent,
                       fontSize: 12,
@@ -1682,10 +1706,10 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Text(
                     active
-                        ? 'This will replace the current timer with $label.'
-                        : 'Selected: $label',
+                        ? '${context.tr('This will replace the current timer with')} $label.'
+                         : '${context.tr('Selected')}: $label',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: AppTheme.lightText,
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
@@ -1707,7 +1731,7 @@ class _TimerSetupSheetState extends State<_TimerSetupSheet> {
                   )
                       : const Icon(Icons.play_arrow_rounded),
                   label: Text(
-                    active ? 'Replace timer' : 'Start timer',
+                    active ? context.tr('Replace timer') : context.tr('Start timer'),
                   ),
                 ),
               ),
@@ -1758,8 +1782,8 @@ class _TimerRunningSheetCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Timer running',
+                Text(
+                  context.tr('Timer running'),
                   style: TextStyle(
                     color: AppTheme.darkText,
                     fontWeight: FontWeight.w900,
@@ -1768,7 +1792,7 @@ class _TimerRunningSheetCard extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.lightText,
                     fontSize: 12,
                   ),
@@ -1778,7 +1802,7 @@ class _TimerRunningSheetCard extends StatelessWidget {
           ),
           TextButton(
             onPressed: busy ? null : onCancel,
-            child: const Text('Cancel'),
+            child: Text(context.tr('Cancel')),
           ),
         ],
       ),
@@ -1874,7 +1898,7 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
     final id = _nextSlotId();
 
     if (id == null) {
-      _showMessage('Maximum $_maxSchedules schedules are allowed.');
+      _showMessage(context.tr('Maximum 6 schedules are allowed.'));
       return;
     }
 
@@ -1937,12 +1961,12 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
       }
 
       if (!item.hasAnyDaySelected) {
-        _showMessage('${item.label}: select at least one day.');
+        _showMessage('${item.label}: ${context.tr('select at least one day.')}');
         return;
       }
 
       if (item.onMinutes == item.offMinutes) {
-        _showMessage('${item.label}: ON and OFF time cannot be the same.');
+        _showMessage('${item.label}: ${context.tr('ON and OFF time cannot be the same.')}');
         return;
       }
     }
@@ -1988,12 +2012,12 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
             const SizedBox(height: 16),
             Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Weekly Schedules',
+                        context.tr('Weekly Schedules'),
                         style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.w900,
@@ -2002,7 +2026,7 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
                       ),
                       SizedBox(height: 3),
                       Text(
-                        'Choose ON/OFF time and repeat days',
+                        context.tr('Choose ON/OFF time and repeat days'),
                         style: TextStyle(color: AppTheme.lightText),
                       ),
                     ],
@@ -2048,7 +2072,7 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
                 child: OutlinedButton.icon(
                   onPressed: _addSchedule,
                   icon: const Icon(Icons.add_rounded),
-                  label: Text('Add Schedule (${_items.length}/$_maxSchedules)'),
+                  label: Text('${context.tr('Add Schedule')} (${_items.length}/$_maxSchedules)'),
                 ),
               ),
             if (_items.length < _maxSchedules) const SizedBox(height: 10),
@@ -2058,7 +2082,7 @@ class _ScheduleManagerSheetState extends State<_ScheduleManagerSheet> {
               child: FilledButton.icon(
                 onPressed: _save,
                 icon: const Icon(Icons.save_rounded),
-                label: const Text('Save Schedules'),
+                label: Text(context.tr('Save Schedules')),
               ),
             ),
           ],
@@ -2092,16 +2116,16 @@ class _EmptyScheduleState extends StatelessWidget {
               color: AppTheme.primary,
             ),
             const SizedBox(height: 12),
-            const Text(
-              'No schedules yet',
+            Text(
+              context.tr('No schedules yet'),
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w900,
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Add a recurring weekly schedule. It keeps working locally after WiFi disconnects.',
+            Text(
+              context.tr('Add a recurring weekly schedule. It keeps working locally after WiFi disconnects.'),
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.lightText),
             ),
@@ -2109,7 +2133,7 @@ class _EmptyScheduleState extends StatelessWidget {
             FilledButton.icon(
               onPressed: onAdd,
               icon: const Icon(Icons.add_rounded),
-              label: const Text('Add First Schedule'),
+              label: Text(context.tr('Add First Schedule')),
             ),
           ],
         ),
@@ -2189,7 +2213,7 @@ class _ScheduleEditorCard extends StatelessWidget {
                 ),
                 IconButton(
                   onPressed: onDelete,
-                  tooltip: 'Delete schedule',
+                  tooltip: context.tr('Delete schedule'),
                   icon: const Icon(
                     Icons.delete_outline_rounded,
                     color: Colors.redAccent,
@@ -2204,7 +2228,7 @@ class _ScheduleEditorCard extends StatelessWidget {
                   child: OutlinedButton.icon(
                     onPressed: onPickOnTime,
                     icon: const Icon(Icons.play_arrow_rounded),
-                    label: Text('ON ${formatTime(context, item.onMinutes)}'),
+                    label: Text('${context.tr('ON')} ${formatTime(context, item.onMinutes)}'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -2212,7 +2236,7 @@ class _ScheduleEditorCard extends StatelessWidget {
                   child: OutlinedButton.icon(
                     onPressed: onPickOffTime,
                     icon: const Icon(Icons.stop_rounded),
-                    label: Text('OFF ${formatTime(context, item.offMinutes)}'),
+                    label: Text('${context.tr('OFF')} ${formatTime(context, item.offMinutes)}'),
                   ),
                 ),
               ],
@@ -2221,7 +2245,7 @@ class _ScheduleEditorCard extends StatelessWidget {
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Repeat on',
+                context.tr('Repeat on'),
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
@@ -2237,7 +2261,7 @@ class _ScheduleEditorCard extends StatelessWidget {
                 final selected = item.isEnabledOnDayIndex(index);
 
                 return ChoiceChip(
-                  label: Text(ScheduleItem.dayShortNames[index]),
+                  label: Text(context.tr(ScheduleItem.dayShortNames[index])),
                   selected: selected,
                   onSelected: (_) => onToggleDay(index),
                   selectedColor: AppTheme.primary.withOpacity(0.16),

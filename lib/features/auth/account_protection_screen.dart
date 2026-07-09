@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
 import '../../services/auth_service.dart';
-import '../home/home_shell.dart';
 import 'link_email_screen.dart';
 import 'phone_auth_mode.dart';
 import 'phone_auth_screen.dart';
+import 'welcome_onboarding_screen.dart';
 
 enum AccountProtectionSource {
   emailSignUp,
@@ -108,7 +108,7 @@ class _AccountProtectionScreenState extends State<AccountProtectionScreen> {
 
   void _continueToHome() {
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const HomeShell()),
+      MaterialPageRoute(builder: (_) => const WelcomeOnboardingScreen()),
           (route) => false,
     );
   }
@@ -164,7 +164,7 @@ class _AccountProtectionScreenState extends State<AccountProtectionScreen> {
               const SizedBox(height: 24),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 27,
                   fontWeight: FontWeight.w900,
@@ -173,7 +173,7 @@ class _AccountProtectionScreenState extends State<AccountProtectionScreen> {
               const SizedBox(height: 10),
               Text(
                 subtitle,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   height: 1.45,
                   fontSize: 15,
@@ -273,14 +273,14 @@ class _AccountProtectionScreenState extends State<AccountProtectionScreen> {
                 height: 56,
                 child: FilledButton(
                   onPressed: _continueToHome,
-                  child: Text(
-                    securityReady ? 'Continue to Easy Home Control' : 'Continue for now',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  child: const Text(
+                    'Continue to welcome guide',
+                    style: TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'You can always manage account protection later in App Settings. Adding another method never creates a new device account.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -333,7 +333,7 @@ class _ProtectionMethodRow extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontWeight: FontWeight.w800,
                 ),
@@ -343,7 +343,7 @@ class _ProtectionMethodRow extends StatelessWidget {
                 subtitle,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   height: 1.3,
                   fontSize: 13,

@@ -116,7 +116,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                     ),
                   ],
                 ),
-                child: const Row(
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Icon(Icons.mark_email_read_outlined,
@@ -181,7 +181,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       color: Colors.green.withValues(alpha: 0.25),
                     ),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
                       Icon(Icons.check_circle_outline_rounded,
                           color: Colors.green),

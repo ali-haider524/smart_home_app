@@ -1,13 +1,17 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/app_language.dart';
+import '../../core/app_notice.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
 import '../../models/device_model.dart';
 import '../../services/app_ticker.dart';
 import '../../services/device_service.dart';
 import '../settings/app_settings_screen.dart';
-import 'add_device_screen.dart';
+import 'add_device_hub_screen.dart';
 import 'archived_devices_screen.dart';
 import 'device_control_screen.dart';
 
@@ -22,9 +26,19 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  static const String _dashboardChannelId = 'ch1';
+  static const Duration _quickPowerConfirmationTimeout = Duration(seconds: 15);
+
   final DeviceService _deviceService = DeviceService();
   late final Stream<List<DeviceModel>> _devicesStream;
   late final Stream<List<DeviceModel>> _archivedDevicesStream;
+
+  // The dashboard keeps its own lightweight command state per device. It only
+  // sends the existing /command payload and waits for the ESP-reported /state;
+  // it never changes the UI optimistically or writes relay state directly.
+  final Map<String, _DashboardPowerCommand> _quickPowerCommands =
+  <String, _DashboardPowerCommand>{};
+  int _quickPowerAttempt = 0;
 
   @override
   void initState() {
@@ -33,9 +47,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _archivedDevicesStream = _deviceService.listenArchivedDevices();
   }
 
+  @override
+  void dispose() {
+    for (final command in _quickPowerCommands.values) {
+      command.timeout?.cancel();
+    }
+    _quickPowerCommands.clear();
+    super.dispose();
+  }
+
   void _openAddDevice() {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const AddDeviceScreen()),
+      MaterialPageRoute(builder: (_) => const AddDeviceHubScreen()),
     );
   }
 
@@ -62,12 +85,146 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // never shows a transparent or black route during the transition.
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => const Scaffold(
+        builder: (_) => Scaffold(
           backgroundColor: AppTheme.background,
           body: AppSettingsScreen(),
         ),
       ),
     );
+  }
+
+  Future<void> _sendQuickPowerCommand(DeviceModel device) async {
+    final channel = device.channels[_dashboardChannelId];
+
+    // A dashboard card must never create a command for an unknown channel or
+    // send another command while confirmation for this device is still pending.
+    if (channel == null || !device.isOnline || _quickPowerCommands.containsKey(device.id)) {
+      return;
+    }
+
+    final requestedState = !channel.state;
+    final attempt = ++_quickPowerAttempt;
+
+    setState(() {
+      _quickPowerCommands[device.id] = _DashboardPowerCommand(
+        attempt: attempt,
+        requestedState: requestedState,
+      );
+    });
+
+    try {
+      await _deviceService.setChannelState(
+        deviceId: device.id,
+        channelId: _dashboardChannelId,
+        state: requestedState,
+      );
+
+      // The ESP can confirm before the Firebase write Future returns. Do not
+      // attach an obsolete timer in that case.
+      if (!mounted) {
+        return;
+      }
+
+      final pending = _quickPowerCommands[device.id];
+      if (pending == null || pending.attempt != attempt) {
+        return;
+      }
+
+      pending.timeout?.cancel();
+      pending.timeout = Timer(_quickPowerConfirmationTimeout, () {
+        if (!mounted) {
+          return;
+        }
+
+        final current = _quickPowerCommands[device.id];
+        if (current == null || current.attempt != attempt) {
+          return;
+        }
+
+        _clearQuickPowerCommand(device.id);
+        AppNotice.show(
+          context,
+          context.tr(
+            'The switch did not confirm this command. Check its connection and current state before trying again.',
+          ),
+          type: AppNoticeType.error,
+        );
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      final current = _quickPowerCommands[device.id];
+      if (current == null || current.attempt != attempt) {
+        return;
+      }
+
+      _clearQuickPowerCommand(device.id);
+      AppNotice.show(
+        context,
+        context.tr(
+          'Could not send the command. Check your internet connection and try again.',
+        ),
+        type: AppNoticeType.error,
+      );
+    }
+  }
+
+  void _queueQuickPowerConfirmation(DeviceModel device) {
+    final pending = _quickPowerCommands[device.id];
+    final actualState = device.channels[_dashboardChannelId]?.state;
+
+    if (pending == null) {
+      return;
+    }
+
+    if (actualState == null || pending.requestedState != actualState) {
+      // A newer device update can arrive before the queued post-frame check.
+      // Let a later matching ESP state schedule its own confirmation.
+      pending.confirmationQueued = false;
+      return;
+    }
+
+    if (pending.confirmationQueued) {
+      return;
+    }
+
+    pending.confirmationQueued = true;
+    final attempt = pending.attempt;
+
+    // Device state arrives through a StreamBuilder. Confirm after this build so
+    // the dashboard never calls setState while its widget tree is building.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      final current = _quickPowerCommands[device.id];
+      if (current == null ||
+          current.attempt != attempt ||
+          current.requestedState != actualState) {
+        return;
+      }
+
+      _clearQuickPowerCommand(device.id);
+      AppNotice.show(
+        context,
+        actualState
+            ? context.tr('Switch turned ON.')
+            : context.tr('Switch turned OFF.'),
+        type: AppNoticeType.success,
+      );
+    });
+  }
+
+  void _clearQuickPowerCommand(String deviceId) {
+    final pending = _quickPowerCommands.remove(deviceId);
+    pending?.timeout?.cancel();
+
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
@@ -89,6 +246,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         deviceSnapshot.data ?? const <DeviceModel>[];
                     final archivedCount = archivedSnapshot.data?.length ?? 0;
                     final overview = _HomeOverview.fromDevices(devices);
+
+                    for (final device in devices) {
+                      _queueQuickPowerConfirmation(device);
+                    }
 
                     return CustomScrollView(
                       physics: const BouncingScrollPhysics(),
@@ -143,8 +304,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       index++) ...[
                                         _DeviceCard(
                                           device: devices[index],
+                                          commandPending: _quickPowerCommands
+                                              .containsKey(devices[index].id),
+                                          requestedState: _quickPowerCommands[
+                                          devices[index].id]
+                                              ?.requestedState,
                                           onTap: () =>
                                               _openDevice(devices[index]),
+                                          onQuickPowerTap: devices[index].isOnline &&
+                                              devices[index]
+                                                  .channels
+                                                  .containsKey(_dashboardChannelId) &&
+                                              !_quickPowerCommands.containsKey(
+                                                devices[index].id,
+                                              )
+                                              ? () => _sendQuickPowerCommand(
+                                            devices[index],
+                                          )
+                                              : null,
                                         ),
                                         if (index != devices.length - 1)
                                           const SizedBox(height: 12),
@@ -218,64 +395,98 @@ class _HomeHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return TechHeroSurface(
+      padding: const EdgeInsets.fromLTRB(18, 17, 14, 17),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  greeting,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Easy Home Control',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.75,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    fontSize: 12.5,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Container(
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.13),
+                    borderRadius: BorderRadius.circular(99),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.12),
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.bolt_rounded,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                      SizedBox(width: 5),
+                      Text(
+                        'Smart home control',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Column(
             children: [
-              Text(
-                greeting,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppTheme.lightText,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                ),
+              _HeaderArchiveButton(
+                count: archivedCount,
+                onTap: onOpenArchived,
               ),
-              const SizedBox(height: 5),
-              const Text(
-                'Easy Home Control',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: AppTheme.darkText,
-                  fontSize: 25,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.75,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                subtitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppTheme.lightText,
-                  fontSize: 13,
-                  height: 1.3,
-                ),
+              const SizedBox(height: 8),
+              _ProfileButton(
+                initial: profileInitial,
+                onTap: onOpenProfile,
               ),
             ],
           ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          children: [
-            _HeaderArchiveButton(
-              count: archivedCount,
-              onTap: onOpenArchived,
-            ),
-            const SizedBox(height: 8),
-            _ProfileButton(
-              initial: profileInitial,
-              onTap: onOpenProfile,
-            ),
-          ],
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -306,9 +517,16 @@ class _HeaderArchiveButton extends StatelessWidget {
               height: 38,
               width: 38,
               decoration: BoxDecoration(
-                color: AppTheme.card,
+                color: const Color(0xFF0C3A98).withValues(alpha: 0.88),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppTheme.outline),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.42)),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF06266B).withValues(alpha: 0.30),
+                    blurRadius: 12,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
               ),
               child: Stack(
                 clipBehavior: Clip.none,
@@ -316,7 +534,7 @@ class _HeaderArchiveButton extends StatelessWidget {
                   const Center(
                     child: Icon(
                       Icons.inventory_2_outlined,
-                      color: AppTheme.lightText,
+                      color: Colors.white,
                       size: 19,
                     ),
                   ),
@@ -332,10 +550,10 @@ class _HeaderArchiveButton extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 4),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: AppTheme.automation,
+                          color: AppTheme.electric,
                           borderRadius: BorderRadius.circular(99),
                           border: Border.all(
-                            color: AppTheme.background,
+                            color: AppTheme.primaryDark,
                             width: 2,
                           ),
                         ),
@@ -381,17 +599,25 @@ class _ProfileButton extends StatelessWidget {
               height: 38,
               width: 38,
               decoration: BoxDecoration(
-                color: AppTheme.primary.withValues(alpha: 0.10),
+                color: const Color(0xFF062C7D).withValues(alpha: 0.92),
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: AppTheme.primary.withValues(alpha: 0.18),
+                  color: Colors.white.withValues(alpha: 0.48),
+                  width: 1.1,
                 ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF06266B).withValues(alpha: 0.34),
+                    blurRadius: 12,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
               ),
               child: Center(
                 child: Text(
                   initial,
                   style: const TextStyle(
-                    color: AppTheme.primaryDark,
+                    color: Colors.white,
                     fontSize: 14.5,
                     fontWeight: FontWeight.w900,
                   ),
@@ -470,14 +696,21 @@ class _StatusTile extends StatelessWidget {
       height: 86,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
       decoration: BoxDecoration(
-        color: AppTheme.card,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppTheme.card,
+            color.withValues(alpha: 0.055),
+          ],
+        ),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.outline.withValues(alpha: 0.76)),
+        border: Border.all(color: color.withValues(alpha: 0.16)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.018),
-            blurRadius: 12,
-            offset: const Offset(0, 5),
+            color: color.withValues(alpha: 0.055),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -490,8 +723,15 @@ class _StatusTile extends StatelessWidget {
             width: 29,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.11),
+              gradient: RadialGradient(
+                center: const Alignment(-0.35, -0.45),
+                colors: [
+                  color.withValues(alpha: 0.22),
+                  color.withValues(alpha: 0.09),
+                ],
+              ),
               shape: BoxShape.circle,
+              border: Border.all(color: color.withValues(alpha: 0.13)),
             ),
             child: Icon(icon, color: color, size: 16),
           ),
@@ -502,7 +742,7 @@ class _StatusTile extends StatelessWidget {
                   value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 15,
                     fontWeight: FontWeight.w900,
@@ -516,7 +756,7 @@ class _StatusTile extends StatelessWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.lightText,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w700,
@@ -554,7 +794,7 @@ class _SectionHeader extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 19,
                   fontWeight: FontWeight.w900,
@@ -564,7 +804,7 @@ class _SectionHeader extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 subtitle,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   fontSize: 12,
                 ),
@@ -588,9 +828,18 @@ class _SectionHeader extends StatelessWidget {
 
 class _DeviceCard extends StatelessWidget {
   final DeviceModel device;
+  final bool commandPending;
+  final bool? requestedState;
   final VoidCallback onTap;
+  final VoidCallback? onQuickPowerTap;
 
-  const _DeviceCard({required this.device, required this.onTap});
+  const _DeviceCard({
+    required this.device,
+    required this.commandPending,
+    required this.requestedState,
+    required this.onTap,
+    required this.onQuickPowerTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -619,25 +868,35 @@ class _DeviceCard extends StatelessWidget {
         child: Ink(
           padding: const EdgeInsets.all(15),
           decoration: BoxDecoration(
-            color: AppTheme.card,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                AppTheme.card,
+                accent.withValues(alpha: 0.045),
+              ],
+            ),
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: AppTheme.outline),
+            border: Border.all(color: accent.withValues(alpha: 0.16)),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.022),
-                blurRadius: 14,
-                offset: const Offset(0, 7),
+                color: accent.withValues(alpha: 0.055),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              _DeviceIcon(
+              _QuickPowerControl(
                 isOnline: isOnline,
                 isOn: isOn,
-                accent: accent,
+                commandPending: commandPending,
+                requestedState: requestedState,
+                onTap: onQuickPowerTap,
               ),
-              const SizedBox(width: 13),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -646,7 +905,7 @@ class _DeviceCard extends StatelessWidget {
                       device.nickname,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.darkText,
                         fontSize: 16,
                         fontWeight: FontWeight.w900,
@@ -657,7 +916,7 @@ class _DeviceCard extends StatelessWidget {
                       '${device.model} · ${device.channelCount} ch',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppTheme.lightText,
                         fontSize: 12,
                       ),
@@ -694,12 +953,214 @@ class _DeviceCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              Icon(
-                Icons.chevron_right_rounded,
-                color: accent.withValues(alpha: 0.82),
-                size: 25,
-              ),
+              const _CardChevron(),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashboardPowerCommand {
+  final int attempt;
+  final bool requestedState;
+  Timer? timeout;
+  bool confirmationQueued = false;
+
+  _DashboardPowerCommand({
+    required this.attempt,
+    required this.requestedState,
+  });
+}
+class _QuickPowerControl extends StatelessWidget {
+  final bool isOnline;
+  final bool isOn;
+  final bool commandPending;
+  final bool? requestedState;
+  final VoidCallback? onTap;
+
+  const _QuickPowerControl({
+    required this.isOnline,
+    required this.isOn,
+    required this.commandPending,
+    required this.requestedState,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final label = !isOnline
+        ? context.tr('Offline')
+        : commandPending
+        ? context.tr('Sending')
+        : context.tr('Power');
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _QuickPowerButton(
+          isOnline: isOnline,
+          isOn: isOn,
+          commandPending: commandPending,
+          requestedState: requestedState,
+          onTap: onTap,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: !isOnline ? const Color(0xFF97A1B2) : AppTheme.lightText,
+            fontSize: 10.5,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.1,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CardChevron extends StatelessWidget {
+  const _CardChevron();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4),
+      child: Icon(
+        Icons.chevron_right_rounded,
+        color: AppTheme.lightText.withValues(alpha: 0.85),
+        size: 23,
+      ),
+    );
+  }
+}
+
+class _QuickPowerButton extends StatelessWidget {
+  final bool isOnline;
+  final bool isOn;
+  final bool commandPending;
+  final bool? requestedState;
+  final VoidCallback? onTap;
+
+  const _QuickPowerButton({
+    required this.isOnline,
+    required this.isOn,
+    required this.commandPending,
+    required this.requestedState,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isEnabled = onTap != null;
+    final accent = !isOnline
+        ? const Color(0xFF99A2B2)
+        : isOn
+        ? AppTheme.success
+        : AppTheme.primary;
+    final requestedLabel = requestedState == true
+        ? context.tr('ON')
+        : context.tr('OFF');
+    final semanticLabel = commandPending
+        ? '${context.tr('Sending')} $requestedLabel ${context.tr('command')}'
+        : !isOnline
+        ? context.tr('Device is offline')
+        : isOn
+        ? context.tr('Turn switch off')
+        : context.tr('Turn switch on');
+    final tooltip = commandPending
+        ? '${context.tr('Sending')} $requestedLabel'
+        : semanticLabel;
+
+    return Semantics(
+      button: true,
+      enabled: isEnabled,
+      label: semanticLabel,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            onTap: onTap,
+            customBorder: const CircleBorder(),
+            child: Ink(
+              height: 58,
+              width: 58,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: isEnabled
+                      ? isOn
+                      ? [
+                    accent.withValues(alpha: 0.22),
+                    accent.withValues(alpha: 0.12),
+                  ]
+                      : [
+                    Colors.white,
+                    accent.withValues(alpha: 0.09),
+                  ]
+                      : [
+                    const Color(0xFFF3F5F8),
+                    const Color(0xFFEDEFF4),
+                  ],
+                ),
+                border: Border.all(
+                  color: accent.withValues(alpha: isEnabled ? 0.34 : 0.16),
+                  width: isOn ? 2.0 : 1.6,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: accent.withValues(alpha: isEnabled ? 0.12 : 0.04),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    height: 40,
+                    width: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: accent.withValues(alpha: isEnabled ? 0.18 : 0.10),
+                        width: 1.2,
+                      ),
+                    ),
+                  ),
+                  if (!isOnline)
+                    Icon(
+                      Icons.power_settings_new_rounded,
+                      color: accent.withValues(alpha: 0.55),
+                      size: 28,
+                    )
+                  else if (commandPending)
+                    SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.3,
+                        color: accent,
+                      ),
+                    )
+                  else
+                    Icon(
+                      Icons.power_settings_new_rounded,
+                      color: accent.withValues(alpha: isEnabled ? 1 : 0.58),
+                      size: 28,
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -728,8 +1189,15 @@ class _DeviceIcon extends StatelessWidget {
           width: 50,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: accent.withValues(alpha: 0.11),
+            gradient: RadialGradient(
+              center: const Alignment(-0.45, -0.5),
+              colors: [
+                accent.withValues(alpha: 0.24),
+                accent.withValues(alpha: 0.09),
+              ],
+            ),
             shape: BoxShape.circle,
+            border: Border.all(color: accent.withValues(alpha: 0.16)),
           ),
           child: Icon(
             isOn ? Icons.lightbulb_rounded : Icons.power_rounded,
@@ -774,6 +1242,7 @@ class _DeviceStatusPill extends StatelessWidget {
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.10)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -849,7 +1318,7 @@ class _EmptyHomeCard extends StatelessWidget {
                   context.tr('No devices yet'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 14.5,
                     fontWeight: FontWeight.w900,
@@ -860,7 +1329,7 @@ class _EmptyHomeCard extends StatelessWidget {
                   context.tr('Add your first smart switch to get started.'),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: AppTheme.lightText,
                     fontSize: 11.5,
                     height: 1.28,
@@ -909,7 +1378,7 @@ class _LoadErrorCard extends StatelessWidget {
           Expanded(
             child: Text(
               context.tr('Could not load devices'),
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 13,
                 fontWeight: FontWeight.w700,

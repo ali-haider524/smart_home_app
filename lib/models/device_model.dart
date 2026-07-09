@@ -1,3 +1,5 @@
+import '../core/server_clock.dart';
+
 import 'channel_model.dart';
 import 'schedule_model.dart';
 import 'timer_model.dart';
@@ -123,15 +125,14 @@ class DeviceModel {
     );
   }
 
-  /// Firebase server timestamps are milliseconds since epoch.
-  /// The ESP heartbeat is about every 10 seconds. A 45-second window avoids
-  /// false offline badges during network delay/reconnect. Firebase's server
-  /// clock can be a little ahead of the phone clock, so permit 5 seconds of
-  /// future skew instead of momentarily showing the device offline.
+  /// Firebase server timestamps are milliseconds since epoch. The ESP
+  /// heartbeat is about every 10 seconds. We compare it with Firebase's
+  /// server-time offset rather than the phone's raw clock, so a shared member
+  /// with an incorrect phone time does not see a false Offline status.
   bool get isOnline {
     if (lastSeen <= 0) return false;
 
-    final ageMs = DateTime.now().millisecondsSinceEpoch - lastSeen;
+    final ageMs = ServerClock.instance.nowMilliseconds - lastSeen;
 
     return ageMs >= -_allowedFutureSkewMs && ageMs <= _onlineWindowMs;
   }
@@ -139,7 +140,7 @@ class DeviceModel {
   String get lastSeenText {
     if (lastSeen <= 0) return 'Never seen';
 
-    final rawAgeMs = DateTime.now().millisecondsSinceEpoch - lastSeen;
+    final rawAgeMs = ServerClock.instance.nowMilliseconds - lastSeen;
     final ageMs = rawAgeMs < 0 ? 0 : rawAgeMs;
     final seconds = ageMs ~/ 1000;
 

@@ -193,7 +193,7 @@ class _PhoneOtpScreenState extends State<PhoneOtpScreen> {
                 isLinking
                     ? 'Confirm your mobile number'
                     : 'Enter verification code',
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.darkText,
                   fontSize: 25,
                   fontWeight: FontWeight.w900,
@@ -202,7 +202,7 @@ class _PhoneOtpScreenState extends State<PhoneOtpScreen> {
               const SizedBox(height: 10),
               Text(
                 'We sent a 6-digit code to ${widget.phoneNumber}.',
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppTheme.lightText,
                   height: 1.45,
                 ),
@@ -251,7 +251,7 @@ class _PhoneOtpScreenState extends State<PhoneOtpScreen> {
                 child: Text(_isResending ? 'Sending new code...' : 'Resend OTP'),
               ),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Never share your OTP code with anyone. Easy Home Control support will never ask for your code.',
                 textAlign: TextAlign.center,
                 style: TextStyle(

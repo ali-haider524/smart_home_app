@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 
+import '../core/server_clock.dart';
+import '../models/device_access.dart';
 import '../models/device_model.dart';
 import '../models/energy_estimate.dart';
 import '../models/schedule_model.dart';
@@ -73,7 +76,9 @@ class DeviceClaimResult {
 /// Do not write directly to /state from Flutter. That was the old echo-loop
 /// path and is intentionally removed from this service.
 class DeviceService {
-  DeviceService();
+  DeviceService() {
+    ServerClock.instance.start(_database);
+  }
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
@@ -88,6 +93,8 @@ class DeviceService {
 
   DatabaseReference get _devicesRef => _database.ref('devices');
   DatabaseReference get _usersRef => _database.ref('users');
+  DatabaseReference get _deviceAccessRef => _database.ref('deviceAccess');
+  DatabaseReference get _accessInvitesRef => _database.ref('accessInvites');
 
   String? get currentUid => _auth.currentUser?.uid;
 
@@ -103,7 +110,8 @@ class DeviceService {
 
   String _normalizeDeviceId(String value) => value.trim().toUpperCase();
 
-  String _normalizeClaimCode(String value) => value.trim().toUpperCase();
+  String _normalizeClaimCode(String value) =>
+      value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
 
   int _readInt(dynamic value) {
     if (value is int) return value;
@@ -335,12 +343,19 @@ class DeviceService {
     });
   }
 
-  /// Pairs a device to the signed-in user after checking the printed claim
-  /// code and product lifecycle status.
+  /// Claims an unregistered product for the signed-in user.
   ///
-  /// This is still a client-side MVP flow while Firebase Rules are in
-  /// development mode. It provides correct app behavior and messages, but the
-  /// production claim must later move to a trusted backend / Cloud Function.
+  /// Security foundation contract:
+  /// - The app never reads a raw claim code from `/devices/{deviceId}`.
+  /// - Factory provisioning stores the secret at `/deviceSecrets/{deviceId}`,
+  ///   which clients cannot read.
+  /// - A one-time, write-only receipt at `/claimRequests/{deviceId}/{uid}`
+  ///   carries the printed code inside the same atomic update as ownership.
+  /// - RTDB Rules compare that receipt with the private factory secret and
+  ///   reject the entire update if it does not match.
+  ///
+  /// Existing owners can still restore or reopen their own device without
+  /// entering the claim code. This preserves the stable archive/re-add flow.
   Future<DeviceClaimResult> claimDeviceForCurrentUser({
     required String deviceId,
     required String claimCode,
@@ -361,12 +376,6 @@ class DeviceService {
       throw const DeviceClaimException('Enter a valid Device ID.');
     }
 
-    if (normalizedClaimCode.length < 4) {
-      throw const DeviceClaimException(
-        'Enter the claim code printed on the device.',
-      );
-    }
-
     final snapshots = await Future.wait<DataSnapshot>([
       _devicesRef.child(normalizedDeviceId).get(),
       _usersRef.child(uid).child('devices').child(normalizedDeviceId).get(),
@@ -384,13 +393,6 @@ class DeviceService {
     final device = Map<dynamic, dynamic>.from(deviceSnapshot.value as Map);
     final claimed = device['claimed'] == true;
     final ownerUid = device['ownerUid']?.toString() ?? '';
-    final storedClaimCode =
-    _normalizeClaimCode(device['claimCode']?.toString() ?? '');
-
-    if (storedClaimCode.isEmpty ||
-        storedClaimCode != normalizedClaimCode) {
-      throw const DeviceClaimException('Claim code is incorrect.');
-    }
 
     final activation = device['activation'] is Map
         ? Map<dynamic, dynamic>.from(device['activation'] as Map)
@@ -407,23 +409,24 @@ class DeviceService {
       );
     }
 
-    if (claimed && ownerUid.isNotEmpty && ownerUid != uid) {
-      throw const DeviceClaimException(
-        'This device is already linked to another account.',
-      );
-    }
-
     final userMapping = userMappingSnapshot.value is Map
         ? Map<dynamic, dynamic>.from(userMappingSnapshot.value as Map)
         : <dynamic, dynamic>{};
 
     final mappingExists = userMappingSnapshot.exists;
     final mappingIsActive = mappingExists && userMapping['active'] != false;
-    final existingNickname =
-        userMapping['nickname']?.toString().trim() ?? '';
+    final existingNickname = userMapping['nickname']?.toString().trim() ?? '';
 
-    // Already owned by the same account: never force the customer through
-    // WiFi setup again. If it was archived, restore it safely instead.
+    // Already owned by another account. Factory claim credentials must never
+    // become a reusable household sharing password.
+    if (claimed && ownerUid.isNotEmpty && ownerUid != uid) {
+      throw const DeviceClaimException(
+        'This device is already linked to another account. Ask the owner to share access or transfer ownership.',
+      );
+    }
+
+    // Already owned by the same account: never require the printed code or
+    // force Wi-Fi setup again. If the shortcut was archived, restore it.
     if (claimed && ownerUid == uid && mappingExists) {
       if (!mappingIsActive) {
         await _usersRef.child(uid).child('devices').child(normalizedDeviceId).update({
@@ -447,9 +450,8 @@ class DeviceService {
       );
     }
 
-    // Ownership already exists but this account's shortcut was removed outside
-    // the normal archive flow. Restore only the shortcut; do not reopen WiFi
-    // setup or rewrite device ownership.
+    // Ownership exists but the current owner's personal shortcut was removed
+    // outside the normal archive flow. Restore only that shortcut.
     if (claimed && ownerUid == uid && !mappingExists) {
       await _usersRef.child(uid).child('devices').child(normalizedDeviceId).set({
         'role': 'owner',
@@ -466,7 +468,22 @@ class DeviceService {
       );
     }
 
+    // New owner claim. Factory codes are generated as long random values; the
+    // app accepts the formatted value without exposing or reading the stored
+    // factory secret from Firebase.
+    if (normalizedClaimCode.length < 16) {
+      throw const DeviceClaimException(
+        'Enter the full claim code printed on the product label.',
+      );
+    }
+
     final rootUpdates = <String, dynamic>{
+      // Write-only proof. RTDB Rules compare it with `/deviceSecrets` during
+      // this same atomic update. No screen reads this node.
+      'claimRequests/$normalizedDeviceId/$uid': {
+        'claimCode': normalizedClaimCode,
+        'requestedAt': ServerValue.timestamp,
+      },
       'devices/$normalizedDeviceId/claimed': true,
       'devices/$normalizedDeviceId/ownerUid': uid,
       'devices/$normalizedDeviceId/claimedAt': ServerValue.timestamp,
@@ -477,10 +494,17 @@ class DeviceService {
         'addedAt': ServerValue.timestamp,
         'restoredAt': ServerValue.timestamp,
       },
+      // Device-wide account access remains outside the ESP operation tree.
+      'deviceAccess/$normalizedDeviceId/$uid': {
+        'role': 'owner',
+        'addedAt': ServerValue.timestamp,
+        'addedBy': uid,
+        'displayLabel': _currentUserLabel(),
+      },
     };
 
-    // Existing legacy products do not have activation data. We create it at
-    // first registration while preserving future factory-set warranty fields.
+    // Existing legacy products may not have an activation node. Creating it
+    // during the first valid claim keeps old stock compatible.
     if (activationStatus.isEmpty || activationStatus == 'eligible') {
       rootUpdates['devices/$normalizedDeviceId/activation/status'] = 'active';
       rootUpdates['devices/$normalizedDeviceId/activation/activatedAt'] =
@@ -488,7 +512,16 @@ class DeviceService {
       rootUpdates['devices/$normalizedDeviceId/activation/activatedBy'] = uid;
     }
 
-    await _database.ref().update(rootUpdates);
+    try {
+      await _database.ref().update(rootUpdates);
+    } on FirebaseException catch (error) {
+      if (error.code == 'permission-denied') {
+        throw const DeviceClaimException(
+          'Claim code is incorrect, the device is unavailable, or it was already claimed.',
+        );
+      }
+      rethrow;
+    }
 
     return DeviceClaimResult(
       outcome: DeviceClaimOutcome.newlyRegistered,
@@ -935,6 +968,761 @@ class DeviceService {
       timer.cancel();
       await subscription.cancel();
     }
+  }
+
+
+  /// Requests a non-destructive local Wi-Fi setup hotspot from an online
+  /// device. The firmware acknowledges it without clearing saved credentials;
+  /// replacement Wi-Fi is stored only after the ESP joins it successfully.
+  Future<int> requestWiFiSetupMode({
+    required String deviceId,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please log in before changing Wi-Fi.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final requestId = _nextRequestId();
+
+    await _devicesRef
+        .child(normalizedDeviceId)
+        .child('maintenance')
+        .child('openWifiSetup')
+        .update({
+      'id': requestId,
+      'requested': true,
+      'requestedAt': ServerValue.timestamp,
+      'requestedBy': uid,
+    });
+
+    return requestId;
+  }
+
+  /// Waits for the exact non-destructive Wi-Fi setup acknowledgement from the
+  /// ESP. This never polls the Flutter UI and does not touch resetWifi.
+  Future<bool> waitForWiFiSetupModeAcknowledgement({
+    required String deviceId,
+    required int requestId,
+    Duration timeout = const Duration(seconds: 45),
+  }) async {
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final setupRef = _devicesRef
+        .child(normalizedDeviceId)
+        .child('maintenance')
+        .child('openWifiSetup');
+
+    bool isAcknowledged(dynamic value) {
+      if (value is! Map) return false;
+      final data = Map<dynamic, dynamic>.from(value);
+      return _readInt(data['ackId']) == requestId &&
+          data['requested'] == false;
+    }
+
+    final initial = await setupRef.get();
+    if (isAcknowledged(initial.value)) {
+      return true;
+    }
+
+    final completer = Completer<bool>();
+    late final StreamSubscription<DatabaseEvent> subscription;
+    late final Timer timer;
+
+    subscription = setupRef.onValue.listen(
+          (event) {
+        if (isAcknowledged(event.snapshot.value) && !completer.isCompleted) {
+          completer.complete(true);
+        }
+      },
+      onError: (_) {
+        // The device may be switching into AP+STA mode. Keep waiting until the
+        // requested timeout instead of failing on a short transient error.
+      },
+    );
+
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        completer.complete(false);
+      }
+    });
+
+    try {
+      return await completer.future;
+    } finally {
+      timer.cancel();
+      await subscription.cancel();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared-home access
+  // -------------------------------------------------------------------------
+  // These account records live outside /devices/{id}. The ESP firmware never
+  // reads or writes them, so sharing cannot alter the stable command, timer,
+  // schedule, heartbeat, or Wi-Fi provisioning contract.
+
+  String _normalizeInviteCode(String value) {
+    return value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+  }
+
+  String _currentUserLabel() {
+    final email = _auth.currentUser?.email?.trim();
+    if (email != null && email.isNotEmpty) return email;
+
+    final phone = _auth.currentUser?.phoneNumber?.trim();
+    if (phone != null && phone.isNotEmpty) return phone;
+
+    return 'Shared user';
+  }
+
+  String _generateInviteCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    final random = Random.secure();
+    final result = StringBuffer();
+
+    // 20 base-32 characters provide roughly 100 bits of entropy. Hyphens are
+    // presentation-only and are accepted by _normalizeInviteCode().
+    for (var index = 0; index < 20; index++) {
+      result.write(alphabet[random.nextInt(alphabet.length)]);
+    }
+
+    return result.toString();
+  }
+
+  Future<DeviceAccessInfo> getCurrentUserDeviceAccess(String deviceId) async {
+    final uid = currentUid;
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    if (uid == null) return DeviceAccessInfo.empty(normalizedDeviceId);
+
+    final mappingSnapshot = await _usersRef
+        .child(uid)
+        .child('devices')
+        .child(normalizedDeviceId)
+        .get();
+
+    if (!mappingSnapshot.exists) {
+      return DeviceAccessInfo.empty(normalizedDeviceId);
+    }
+
+    if (mappingSnapshot.value is Map) {
+      return DeviceAccessInfo.fromMap(
+        normalizedDeviceId,
+        Map<dynamic, dynamic>.from(mappingSnapshot.value as Map),
+      );
+    }
+
+    // Legacy mappings used true. They are only owner mappings in the original
+    // application contract, so retain that safe backward-compatible behavior.
+    if (mappingSnapshot.value == true) {
+      return DeviceAccessInfo(
+        deviceId: normalizedDeviceId,
+        role: DeviceAccessRole.owner,
+        nickname: 'Smart Switch',
+        active: true,
+      );
+    }
+
+    return DeviceAccessInfo.empty(normalizedDeviceId);
+  }
+
+  Stream<DeviceAccessInfo> listenCurrentUserDeviceAccess(String deviceId) {
+    final uid = currentUid;
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+
+    if (uid == null) {
+      return Stream.value(DeviceAccessInfo.empty(normalizedDeviceId));
+    }
+
+    return _usersRef
+        .child(uid)
+        .child('devices')
+        .child(normalizedDeviceId)
+        .onValue
+        .map((event) {
+      final value = event.snapshot.value;
+
+      if (value is Map) {
+        return DeviceAccessInfo.fromMap(
+          normalizedDeviceId,
+          Map<dynamic, dynamic>.from(value),
+        );
+      }
+
+      if (value == true) {
+        return DeviceAccessInfo(
+          deviceId: normalizedDeviceId,
+          role: DeviceAccessRole.owner,
+          nickname: 'Smart Switch',
+          active: true,
+        );
+      }
+
+      return DeviceAccessInfo.empty(normalizedDeviceId);
+    });
+  }
+
+  Future<void> _requireCurrentUserOwner(String deviceId) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before managing device access.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final ownerSnapshot = await _devicesRef
+        .child(normalizedDeviceId)
+        .child('ownerUid')
+        .get();
+
+    if (ownerSnapshot.value?.toString() != uid) {
+      throw const DeviceMaintenanceException(
+        'Only the device owner can manage access or transfer ownership.',
+      );
+    }
+  }
+
+  /// Ensures legacy owner records have a matching access record. It is called
+  /// only when the verified owner opens Manage access and does not touch the
+  /// firmware device contract.
+  Future<void> ensureCurrentOwnerAccessRecord(String deviceId) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before managing device access.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    await _requireCurrentUserOwner(normalizedDeviceId);
+
+    final accessRef = _deviceAccessRef.child(normalizedDeviceId).child(uid);
+    final existing = await accessRef.get();
+
+    if (existing.exists) return;
+
+    await accessRef.set({
+      'role': 'owner',
+      'addedAt': ServerValue.timestamp,
+      'addedBy': uid,
+      'displayLabel': _currentUserLabel(),
+    });
+  }
+
+  Stream<List<DeviceAccessMember>> listenDeviceAccessMembers(String deviceId) {
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+
+    return _deviceAccessRef.child(normalizedDeviceId).onValue.map((event) {
+      final value = event.snapshot.value;
+      if (value is! Map) return <DeviceAccessMember>[];
+
+      final members = <DeviceAccessMember>[];
+      Map<dynamic, dynamic>.from(value).forEach((uid, item) {
+        if (item is Map) {
+          members.add(
+            DeviceAccessMember.fromMap(
+              uid.toString(),
+              Map<dynamic, dynamic>.from(item),
+            ),
+          );
+        }
+      });
+
+      members.sort((left, right) {
+        if (left.isOwner != right.isOwner) return left.isOwner ? -1 : 1;
+        return left.displayLabel.compareTo(right.displayLabel);
+      });
+
+      return members;
+    });
+  }
+
+  DatabaseReference _ownerInvitePointersRef(String uid, String deviceId) {
+    return _usersRef
+        .child(uid)
+        .child('devices')
+        .child(deviceId)
+        .child('accessInvitePointers');
+  }
+
+  /// Restores the owner's still-valid share or transfer code after this screen
+  /// is reopened. The actual code remains stored server-side for its full
+  /// lifetime; leaving the page never cancels it.
+  Future<Map<DeviceInviteType, DeviceAccessInvite>>
+  loadCurrentOwnerAccessInvites(String deviceId) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before managing device access.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    await _requireCurrentUserOwner(normalizedDeviceId);
+
+    final pointersSnapshot =
+    await _ownerInvitePointersRef(uid, normalizedDeviceId).get();
+    if (pointersSnapshot.value is! Map) {
+      return <DeviceInviteType, DeviceAccessInvite>{};
+    }
+
+    final pointerMap = Map<dynamic, dynamic>.from(pointersSnapshot.value as Map);
+    final candidates = <DeviceInviteType, String>{};
+
+    for (final type in DeviceInviteType.values) {
+      final rawPointer = pointerMap[type.firebaseValue];
+      if (rawPointer is! Map) continue;
+
+      final pointer = Map<dynamic, dynamic>.from(rawPointer);
+      final code = _normalizeInviteCode(pointer['code']?.toString() ?? '');
+      if (code.length == 20) {
+        candidates[type] = code;
+      }
+    }
+
+    if (candidates.isEmpty) {
+      return <DeviceInviteType, DeviceAccessInvite>{};
+    }
+
+    final snapshots = await Future.wait<DataSnapshot>(
+      candidates.values.map((code) => _accessInvitesRef.child(code).get()),
+    );
+
+    final active = <DeviceInviteType, DeviceAccessInvite>{};
+    final stalePointerUpdates = <String, dynamic>{};
+    var index = 0;
+
+    for (final entry in candidates.entries) {
+      final snapshot = snapshots[index++];
+      final type = entry.key;
+      final code = entry.value;
+
+      if (snapshot.value is! Map) {
+        stalePointerUpdates[
+        'users/$uid/devices/$normalizedDeviceId/accessInvitePointers/${type.firebaseValue}'] = null;
+        continue;
+      }
+
+      final invite = DeviceAccessInvite.fromMap(
+        code,
+        Map<dynamic, dynamic>.from(snapshot.value as Map),
+      );
+
+      final keepInvite = invite.deviceId == normalizedDeviceId &&
+          invite.createdBy == uid &&
+          invite.type == type &&
+          !invite.isExpired &&
+          (invite.status == DeviceInviteStatus.pending ||
+              (type == DeviceInviteType.transfer &&
+                  invite.status == DeviceInviteStatus.accepted));
+
+      if (keepInvite) {
+        active[type] = invite;
+      } else {
+        stalePointerUpdates[
+        'users/$uid/devices/$normalizedDeviceId/accessInvitePointers/${type.firebaseValue}'] = null;
+      }
+    }
+
+    if (stalePointerUpdates.isNotEmpty) {
+      await _database.ref().update(stalePointerUpdates);
+    }
+
+    return active;
+  }
+
+  Stream<DeviceAccessInvite?> listenDeviceAccessInvite(String inviteCode) {
+    final cleanCode = _normalizeInviteCode(inviteCode);
+    if (cleanCode.isEmpty) return Stream.value(null);
+
+    return _accessInvitesRef.child(cleanCode).onValue.map((event) {
+      final value = event.snapshot.value;
+      if (value is! Map) return null;
+      return DeviceAccessInvite.fromMap(
+        cleanCode,
+        Map<dynamic, dynamic>.from(value),
+      );
+    });
+  }
+
+  Future<DeviceAccessInvite> createDeviceAccessInvite({
+    required String deviceId,
+    required DeviceInviteType type,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before sharing a device.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    await ensureCurrentOwnerAccessRecord(normalizedDeviceId);
+
+    // Reuse an active code so accidental navigation away from Manage access
+    // never forces the owner to generate and resend another code.
+    final existing = await loadCurrentOwnerAccessInvites(normalizedDeviceId);
+    final existingInvite = existing[type];
+    if (existingInvite != null) {
+      return existingInvite;
+    }
+
+    final code = _generateInviteCode();
+    final expiresAt = DateTime.now()
+        .add(const Duration(minutes: 10))
+        .millisecondsSinceEpoch;
+
+    final invite = DeviceAccessInvite(
+      code: code,
+      deviceId: normalizedDeviceId,
+      type: type,
+      status: DeviceInviteStatus.pending,
+      createdBy: uid,
+      expiresAt: expiresAt,
+      acceptedBy: '',
+      recipientLabel: '',
+    );
+
+    await _database.ref().update({
+      'accessInvites/$code': {
+        'deviceId': normalizedDeviceId,
+        'type': type.firebaseValue,
+        'status': DeviceInviteStatus.pending.firebaseValue,
+        'createdBy': uid,
+        'createdAt': ServerValue.timestamp,
+        'expiresAt': expiresAt,
+      },
+      'users/$uid/devices/$normalizedDeviceId/accessInvitePointers/${type.firebaseValue}': {
+        'code': code,
+        'type': type.firebaseValue,
+        'expiresAt': expiresAt,
+        'createdAt': ServerValue.timestamp,
+      },
+    });
+
+    return invite;
+  }
+
+  Future<void> cancelDeviceAccessInvite(String inviteCode) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before cancelling this code.',
+      );
+    }
+
+    final code = _normalizeInviteCode(inviteCode);
+    if (code.isEmpty) return;
+
+    final inviteRef = _accessInvitesRef.child(code);
+    final snapshot = await inviteRef.get();
+    if (snapshot.value is! Map) return;
+
+    final invite = DeviceAccessInvite.fromMap(
+      code,
+      Map<dynamic, dynamic>.from(snapshot.value as Map),
+    );
+
+    if (invite.createdBy != uid) {
+      throw const DeviceMaintenanceException(
+        'Only the device owner can cancel this code.',
+      );
+    }
+
+    final updates = <String, dynamic>{
+      'users/$uid/devices/${invite.deviceId}/accessInvitePointers/${invite.type.firebaseValue}': null,
+    };
+
+    if (invite.status == DeviceInviteStatus.pending) {
+      updates['accessInvites/$code/status'] =
+          DeviceInviteStatus.cancelled.firebaseValue;
+      updates['accessInvites/$code/cancelledAt'] = ServerValue.timestamp;
+    }
+
+    await _database.ref().update(updates);
+  }
+
+  Future<SharedDeviceJoinResult> joinSharedDeviceForCurrentUser({
+    required String deviceId,
+    required String inviteCode,
+    required String nickname,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceClaimException(
+        'Please log in before joining a shared device.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final code = _normalizeInviteCode(inviteCode);
+    final requestedNickname =
+    nickname.trim().isEmpty ? 'Smart Switch' : nickname.trim();
+
+    if (normalizedDeviceId.length < 6) {
+      throw const DeviceClaimException('Enter a valid Device ID.');
+    }
+
+    if (code.length != 20) {
+      throw const DeviceClaimException('Enter the 20-character share code.');
+    }
+
+    final snapshots = await Future.wait<DataSnapshot>([
+      _accessInvitesRef.child(code).get(),
+      _usersRef.child(uid).child('devices').child(normalizedDeviceId).get(),
+      _deviceAccessRef.child(normalizedDeviceId).child(uid).get(),
+    ]);
+
+    final inviteSnapshot = snapshots[0];
+    final userMappingSnapshot = snapshots[1];
+    final accessSnapshot = snapshots[2];
+
+    if (inviteSnapshot.value is! Map) {
+      throw const DeviceClaimException(
+        'Share code was not found. Check it and try again.',
+      );
+    }
+
+    final invite = DeviceAccessInvite.fromMap(
+      code,
+      Map<dynamic, dynamic>.from(inviteSnapshot.value as Map),
+    );
+
+    if (invite.deviceId != normalizedDeviceId) {
+      throw const DeviceClaimException(
+        'This code belongs to a different device.',
+      );
+    }
+
+    if (invite.isExpired) {
+      throw const DeviceClaimException(
+        'This code has expired. Ask the owner for a new one.',
+      );
+    }
+
+    if (invite.status != DeviceInviteStatus.pending) {
+      if (invite.acceptedBy == uid && invite.type == DeviceInviteType.transfer) {
+        return SharedDeviceJoinResult(
+          outcome: SharedDeviceJoinOutcome.transferWaiting,
+          deviceId: normalizedDeviceId,
+          nickname: requestedNickname,
+        );
+      }
+
+      throw const DeviceClaimException(
+        'This code has already been used. Ask the owner for a new one.',
+      );
+    }
+
+    // A user who already has access can restore an archived shortcut without
+    // spending another one-time code.
+    if (accessSnapshot.exists) {
+      final existingMapping = userMappingSnapshot.value is Map
+          ? Map<dynamic, dynamic>.from(userMappingSnapshot.value as Map)
+          : <dynamic, dynamic>{};
+      final existingNickname =
+          existingMapping['nickname']?.toString().trim() ?? '';
+      final wasArchived = userMappingSnapshot.exists &&
+          existingMapping['active'] == false;
+
+      if (wasArchived) {
+        await _usersRef
+            .child(uid)
+            .child('devices')
+            .child(normalizedDeviceId)
+            .update({
+          'active': true,
+          'restoredAt': ServerValue.timestamp,
+        });
+      }
+
+      return SharedDeviceJoinResult(
+        outcome: wasArchived
+            ? SharedDeviceJoinOutcome.restored
+            : SharedDeviceJoinOutcome.alreadyAdded,
+        deviceId: normalizedDeviceId,
+        nickname: existingNickname.isEmpty ? requestedNickname : existingNickname,
+      );
+    }
+
+    if (invite.type == DeviceInviteType.transfer) {
+      await _accessInvitesRef.child(code).update({
+        'status': DeviceInviteStatus.accepted.firebaseValue,
+        'acceptedBy': uid,
+        'acceptedAt': ServerValue.timestamp,
+        'recipientLabel': _currentUserLabel(),
+      });
+
+      return SharedDeviceJoinResult(
+        outcome: SharedDeviceJoinOutcome.transferWaiting,
+        deviceId: normalizedDeviceId,
+        nickname: requestedNickname,
+      );
+    }
+
+    await _database.ref().update({
+      'deviceAccess/$normalizedDeviceId/$uid': {
+        'role': 'member',
+        'addedAt': ServerValue.timestamp,
+        'addedBy': invite.createdBy,
+        'inviteCode': code,
+        'displayLabel': _currentUserLabel(),
+      },
+      'users/$uid/devices/$normalizedDeviceId': {
+        'role': 'member',
+        'nickname': requestedNickname,
+        'active': true,
+        'addedAt': ServerValue.timestamp,
+        'sharedAt': ServerValue.timestamp,
+        'inviteCode': code,
+      },
+      'accessInvites/$code/status': DeviceInviteStatus.accepted.firebaseValue,
+      'accessInvites/$code/acceptedBy': uid,
+      'accessInvites/$code/acceptedAt': ServerValue.timestamp,
+      'accessInvites/$code/recipientLabel': _currentUserLabel(),
+    });
+
+    return SharedDeviceJoinResult(
+      outcome: SharedDeviceJoinOutcome.added,
+      deviceId: normalizedDeviceId,
+      nickname: requestedNickname,
+    );
+  }
+
+  Future<void> removeSharedDeviceMember({
+    required String deviceId,
+    required String memberUid,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before managing device access.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    await ensureCurrentOwnerAccessRecord(normalizedDeviceId);
+
+    if (memberUid == uid) {
+      throw const DeviceMaintenanceException(
+        'Ownership cannot be removed from this screen.',
+      );
+    }
+
+    final targetSnapshot = await _deviceAccessRef
+        .child(normalizedDeviceId)
+        .child(memberUid)
+        .get();
+
+    if (targetSnapshot.value is! Map) {
+      throw const DeviceMaintenanceException(
+        'This shared member no longer has access.',
+      );
+    }
+
+    final target = Map<dynamic, dynamic>.from(targetSnapshot.value as Map);
+    if (DeviceAccessRole.fromValue(target['role']).isOwner) {
+      throw const DeviceMaintenanceException(
+        'Use ownership transfer to change the device owner.',
+      );
+    }
+
+    await _database.ref().update({
+      'deviceAccess/$normalizedDeviceId/$memberUid': null,
+      'users/$memberUid/devices/$normalizedDeviceId': null,
+    });
+  }
+
+  Future<void> completeOwnershipTransfer({
+    required String deviceId,
+    required String inviteCode,
+  }) async {
+    final uid = currentUid;
+    if (uid == null) {
+      throw const DeviceMaintenanceException(
+        'Please sign in before transferring ownership.',
+      );
+    }
+
+    final normalizedDeviceId = _normalizeDeviceId(deviceId);
+    final code = _normalizeInviteCode(inviteCode);
+    await ensureCurrentOwnerAccessRecord(normalizedDeviceId);
+
+    final snapshots = await Future.wait<DataSnapshot>([
+      _accessInvitesRef.child(code).get(),
+      _deviceAccessRef.child(normalizedDeviceId).get(),
+    ]);
+
+    if (snapshots[0].value is! Map) {
+      throw const DeviceMaintenanceException('Transfer code is no longer available.');
+    }
+
+    final invite = DeviceAccessInvite.fromMap(
+      code,
+      Map<dynamic, dynamic>.from(snapshots[0].value as Map),
+    );
+
+    if (invite.type != DeviceInviteType.transfer ||
+        invite.deviceId != normalizedDeviceId ||
+        invite.createdBy != uid ||
+        invite.status != DeviceInviteStatus.accepted ||
+        invite.acceptedBy.trim().isEmpty) {
+      throw const DeviceMaintenanceException(
+        'The new owner has not accepted this transfer code yet.',
+      );
+    }
+
+    final newOwnerUid = invite.acceptedBy;
+    if (newOwnerUid == uid) {
+      throw const DeviceMaintenanceException(
+        'Choose a different account for ownership transfer.',
+      );
+    }
+
+    final previousAccess = <String>{uid};
+    if (snapshots[1].value is Map) {
+      previousAccess.addAll(
+        Map<dynamic, dynamic>.from(snapshots[1].value as Map)
+            .keys
+            .map((value) => value.toString()),
+      );
+    }
+
+    final updates = <String, dynamic>{
+      'devices/$normalizedDeviceId/ownerUid': newOwnerUid,
+      'devices/$normalizedDeviceId/ownershipTransferredAt': ServerValue.timestamp,
+      'devices/$normalizedDeviceId/ownershipTransferredBy': uid,
+      'deviceAccess/$normalizedDeviceId': {
+        newOwnerUid: {
+          'role': 'owner',
+          'addedAt': ServerValue.timestamp,
+          'addedBy': uid,
+          'transferInvite': code,
+          'displayLabel': invite.recipientLabel.isEmpty
+              ? 'New owner'
+              : invite.recipientLabel,
+        },
+      },
+      'users/$newOwnerUid/devices/$normalizedDeviceId': {
+        'role': 'owner',
+        'nickname': 'Smart Switch',
+        'active': true,
+        'addedAt': ServerValue.timestamp,
+        'transferredAt': ServerValue.timestamp,
+      },
+      'accessInvites/$code/status': DeviceInviteStatus.completed.firebaseValue,
+      'accessInvites/$code/completedAt': ServerValue.timestamp,
+    };
+
+    for (final previousUid in previousAccess) {
+      if (previousUid != newOwnerUid) {
+        updates['users/$previousUid/devices/$normalizedDeviceId'] = null;
+      }
+    }
+
+    await _database.ref().update(updates);
   }
 
 }

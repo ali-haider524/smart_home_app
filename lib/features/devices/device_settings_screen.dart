@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_notice.dart';
+import '../../core/app_language.dart';
 import '../../core/app_theme.dart';
+import '../../core/tech_surface.dart';
+import '../../models/device_access.dart';
 import '../../models/device_model.dart';
 import '../../services/device_service.dart';
+import 'device_access_screen.dart';
 import 'energy_estimate_settings_screen.dart';
+import 'wifi_setup_screen.dart';
 
 /// Returned to DeviceControlScreen after settings changes.
 class DeviceSettingsResult {
@@ -12,18 +17,23 @@ class DeviceSettingsResult {
   final bool removed;
   final bool openWiFiSetup;
 
+  /// True only for an already registered device. DeviceControlScreen then
+  /// opens the local Wi-Fi screen in recovery mode without repeating pairing.
+  final bool openWiFiRecovery;
+
   const DeviceSettingsResult({
     this.nickname,
     this.removed = false,
     this.openWiFiSetup = false,
+    this.openWiFiRecovery = false,
   });
 }
 
 /// Safe per-device settings.
 ///
 /// It deliberately does not write to command/state/timer/schedule paths.
-/// WiFi reset uses the separate maintenance/resetWifi contract handled by
-/// firmware v1.4.0 after it acknowledges the request.
+/// Wi-Fi setup uses a separate maintenance/openWifiSetup contract. It opens
+/// the local setup hotspot without clearing the previous credentials first.
 class DeviceSettingsScreen extends StatefulWidget {
   final String deviceId;
   final String initialDeviceName;
@@ -42,7 +52,14 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
   final DeviceService _deviceService = DeviceService();
   late String _deviceName;
   late final Stream<DeviceModel?> _deviceStream;
+  late final Stream<DeviceAccessInfo> _accessStream;
   bool _busy = false;
+
+  // This is kept separate from the short rename/archive operations so Wi-Fi
+  // setup always gives immediate, central feedback instead of a hidden loader
+  // at the bottom of the settings page.
+  bool _openingWiFiSetup = false;
+  String _wifiSetupProgress = '';
 
   @override
   void initState() {
@@ -51,6 +68,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
         ? 'Smart Switch'
         : widget.initialDeviceName.trim();
     _deviceStream = _deviceService.listenDevice(widget.deviceId);
+    _accessStream = _deviceService.listenCurrentUserDeviceAccess(widget.deviceId);
   }
 
   void _close() {
@@ -85,11 +103,11 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
 
       if (!mounted) return;
       setState(() => _deviceName = newName);
-      _showMessage('Device renamed');
+      _showMessage(context.tr('Device renamed'));
     } on DeviceMaintenanceException catch (error) {
       _showMessage(error.message);
     } catch (_) {
-      _showMessage('Could not rename the device. Please try again.');
+      _showMessage(context.tr('Could not rename the device. Please try again.'));
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -109,9 +127,29 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
     );
   }
 
+  Future<void> _openManageAccess() async {
+    final ownershipTransferred = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DeviceAccessScreen(
+          deviceId: widget.deviceId,
+          deviceName: _deviceName,
+        ),
+      ),
+    );
+
+    // After a completed transfer this account is deliberately removed from the
+    // device. Closing the settings/control route prevents stale screen data.
+    if (ownershipTransferred == true && mounted) {
+      Navigator.pop(context, const DeviceSettingsResult(removed: true));
+    }
+  }
+
   Future<void> _changeWiFi({required bool online}) async {
+    // When the switch is offline, Firebase cannot reach it. Guide the owner
+    // directly to local recovery instead of showing a blocked setting.
     if (!online) {
-      _showMessage('Device must be online before WiFi can be changed.');
+      await _openOfflineWiFiRecovery();
       return;
     }
 
@@ -119,7 +157,8 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
-        return _ConfirmWifiResetSheet(
+        return _ConfirmWifiRecoverySheet(
+          hotspotName: WifiSetupScreen.hotspotNameForDevice(widget.deviceId),
           onCancel: () => Navigator.pop(sheetContext, false),
           onConfirm: () => Navigator.pop(sheetContext, true),
         );
@@ -128,17 +167,27 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
 
     if (confirmed != true || !mounted) return;
 
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _openingWiFiSetup = true;
+      _wifiSetupProgress = context.tr('Contacting your switch…');
+    });
     var openingWiFiSetup = false;
 
     try {
-      final requestId = await _deviceService.requestWiFiReset(
+      // Firmware opens AP+STA recovery mode and acknowledges it without
+      // clearing EEPROM credentials. New details replace the old values only
+      // after the ESP joins the new network successfully.
+      final requestId = await _deviceService.requestWiFiSetupMode(
         deviceId: widget.deviceId,
       );
 
       if (!mounted) return;
+      setState(() {
+        _wifiSetupProgress = context.tr('Waiting for the switch to open Wi-Fi setup…');
+      });
 
-      final acknowledged = await _deviceService.waitForWiFiResetAcknowledgement(
+      final acknowledged = await _deviceService.waitForWiFiSetupModeAcknowledgement(
         deviceId: widget.deviceId,
         requestId: requestId,
       );
@@ -146,7 +195,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       if (!mounted) return;
 
       if (!acknowledged) {
-        await _showWiFiResetTimeoutDialog();
+        await _showWiFiSetupTimeoutDialog();
         return;
       }
 
@@ -154,7 +203,11 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       // navigation step, avoiding route replacement while this page's stream
       // widgets are being disposed.
       openingWiFiSetup = true;
-      setState(() => _busy = false);
+      setState(() {
+        _busy = false;
+        _openingWiFiSetup = false;
+        _wifiSetupProgress = '';
+      });
       if (!mounted) return;
 
       Navigator.pop(
@@ -162,35 +215,69 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
         DeviceSettingsResult(
           nickname: _deviceName,
           openWiFiSetup: true,
+          openWiFiRecovery: true,
         ),
       );
     } on DeviceMaintenanceException catch (error) {
       _showMessage(error.message);
     } catch (_) {
       _showMessage(
-        'WiFi reset request failed. Check the device connection and try again.',
+        context.tr('Could not open Wi-Fi setup. Check the device connection and try again.'),
       );
     } finally {
       if (mounted && !openingWiFiSetup) {
-        setState(() => _busy = false);
+        setState(() {
+          _busy = false;
+          _openingWiFiSetup = false;
+          _wifiSetupProgress = '';
+        });
       }
     }
   }
 
-  Future<void> _showWiFiResetTimeoutDialog() async {
+  Future<void> _openOfflineWiFiRecovery() async {
+    final startRecovery = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return _OfflineWifiRecoverySheet(
+          hotspotName: WifiSetupScreen.hotspotNameForDevice(widget.deviceId),
+          onCancel: () => Navigator.pop(sheetContext, false),
+          onContinue: () => Navigator.pop(sheetContext, true),
+        );
+      },
+    );
+
+    if (startRecovery != true || !mounted) return;
+
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WifiSetupScreen(
+          deviceId: widget.deviceId,
+          deviceName: _deviceName,
+          recoveryMode: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showWiFiSetupTimeoutDialog() async {
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Device did not confirm yet'),
-          content: const Text(
-            'The reset request was sent, but the app did not receive an acknowledgement. '
-                'The device may be offline. Do not send repeated requests. Check the device is online and try once again.',
+          title: Text(context.tr('Switch did not confirm yet')),
+          content: Text(
+            context.tr(
+              'The safe Wi-Fi setup request was sent, but the app did not receive an acknowledgement. Keep the switch powered. If it is offline, use Reconnect Wi-Fi and open the local hotspot instead.',
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('OK'),
+              child: Text(context.tr('OK')),
             ),
           ],
         );
@@ -203,21 +290,23 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Remove from My Devices?'),
-          content: const Text(
-            'This hides the device from your dashboard only. It does not erase WiFi, firmware, timers, schedules, ownership, or the physical switch. You can restore it later from Archived Devices.',
+          title: Text(context.tr('Remove from My Devices?')),
+          content: Text(
+            context.tr(
+              'This hides the device from your dashboard only. It does not erase WiFi, firmware, timers, schedules, ownership, or the physical switch. You can restore it later from Archived Devices.',
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
+              child: Text(context.tr('Cancel')),
             ),
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.red.shade700,
               ),
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Remove'),
+              child: Text(context.tr('Remove')),
             ),
           ],
         );
@@ -242,7 +331,7 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
     } on DeviceMaintenanceException catch (error) {
       _showMessage(error.message);
     } catch (_) {
-      _showMessage('Could not remove the device. Please try again.');
+      _showMessage(context.tr('Could not remove the device. Please try again.'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -250,108 +339,284 @@ class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppTheme.background,
-      appBar: AppBar(
+    return WillPopScope(
+      onWillPop: () async => !_openingWiFiSetup,
+      child: Scaffold(
         backgroundColor: AppTheme.background,
-        elevation: 0,
-        leading: IconButton(
-          onPressed: _busy ? null : _close,
-          icon: const Icon(Icons.arrow_back_rounded),
+        appBar: AppBar(
+          backgroundColor: AppTheme.background,
+          elevation: 0,
+          leading: IconButton(
+            onPressed: _busy ? null : _close,
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+          title: Text(context.tr('Device settings')),
         ),
-        title: const Text('Device settings'),
-      ),
-      body: StreamBuilder<DeviceModel?>(
-        stream: _deviceStream,
-        builder: (context, deviceSnapshot) {
-          final device = deviceSnapshot.data;
-          final online = device?.isOnline == true;
+        body: StreamBuilder<DeviceAccessInfo>(
+          stream: _accessStream,
+          initialData: DeviceAccessInfo.empty(widget.deviceId),
+          builder: (context, accessSnapshot) {
+            final access =
+                accessSnapshot.data ?? DeviceAccessInfo.empty(widget.deviceId);
+            final isOwner = access.isOwner;
 
-          return ListView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 34),
-            children: [
-              _DeviceIdentityCard(
-                deviceName: _deviceName,
-                deviceId: widget.deviceId,
-                online: online,
-                lastSeen: device?.lastSeenText ?? 'Checking status',
-                model: device?.model ?? 'SW1',
-              ),
-              if (device?.registrationNeedsAttention == true) ...[
-                const SizedBox(height: 12),
-                _ProductRegistrationCard(device: device!),
-              ],
-              const SizedBox(height: 22),
-              const _SettingsSectionTitle('Controls'),
-              const SizedBox(height: 10),
-              _SettingsCard(
-                children: [
-                  _SettingsTile(
-                    icon: Icons.edit_rounded,
-                    iconColor: AppTheme.primary,
-                    title: 'Rename device',
-                    subtitle: 'Change the name shown in your app',
-                    onTap: _busy ? null : _renameDevice,
-                  ),
-                  const _SettingsDivider(),
-                  _SettingsTile(
-                    icon: Icons.energy_savings_leaf_outlined,
-                    iconColor: AppTheme.success,
-                    title: 'Estimated energy',
-                    subtitle: 'Appliance watts and optional electricity price',
-                    onTap: _busy ? null : _openEnergyEstimateSettings,
-                  ),
-                  const _SettingsDivider(),
-                  _SettingsTile(
-                    icon: Icons.wifi_find_rounded,
-                    iconColor: Colors.orange,
-                    title: 'Change Wi-Fi',
-                    subtitle: online
-                        ? 'Reset Wi-Fi and connect this device again'
-                        : 'Device must be online before changing Wi-Fi',
-                    trailing: online
-                        ? const Icon(Icons.chevron_right_rounded, color: AppTheme.lightText)
-                        : const _OfflinePill(),
-                    onTap: _busy ? null : () => _changeWiFi(online: online),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              const _SettingsSectionTitle('Device information'),
-              const SizedBox(height: 10),
-              if (device != null)
-                _DeviceInformationCard(device: device)
-              else
-                _DeviceInformationPlaceholder(deviceId: widget.deviceId),
-              const SizedBox(height: 22),
-              const _SettingsSectionTitle('Device management'),
-              const SizedBox(height: 10),
-              _SettingsCard(
-                children: [
-                  _SettingsTile(
-                    icon: Icons.inventory_2_outlined,
-                    iconColor: Colors.red,
-                    title: 'Archive device',
-                    subtitle: 'Hide it from Home and restore it later',
-                    titleColor: Colors.red.shade700,
-                    onTap: _busy ? null : _removeFromMyDevices,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              const _SafetyNote(),
-              if (_busy) ...[
-                const SizedBox(height: 22),
-                const Center(child: CircularProgressIndicator()),
-              ],
-            ],
-          );
-        },
+            return StreamBuilder<DeviceModel?>(
+              stream: _deviceStream,
+              builder: (context, deviceSnapshot) {
+                final device = deviceSnapshot.data;
+                final online = device?.isOnline == true;
+
+                return Stack(
+                  children: [
+                    ListView(
+                      physics: const BouncingScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 34),
+                      children: [
+                        _DeviceIdentityCard(
+                          deviceName: _deviceName,
+                          deviceId: widget.deviceId,
+                          online: online,
+                          lastSeen: device?.lastSeenText ?? context.tr('Checking status'),
+                          model: device?.model ?? 'SW1',
+                        ),
+                        if (device?.registrationNeedsAttention == true) ...[
+                          const SizedBox(height: 12),
+                          _ProductRegistrationCard(device: device!),
+                        ],
+                        const SizedBox(height: 22),
+                        const _SettingsSectionTitle('Controls'),
+                        const SizedBox(height: 10),
+                        _SettingsCard(
+                          children: [
+                            _SettingsTile(
+                              icon: Icons.edit_rounded,
+                              iconColor: AppTheme.primary,
+                              title: 'Rename device',
+                              subtitle: 'Change the name shown in your app',
+                              onTap: _busy ? null : _renameDevice,
+                            ),
+                            const _SettingsDivider(),
+                            _SettingsTile(
+                              icon: Icons.energy_savings_leaf_outlined,
+                              iconColor: AppTheme.success,
+                              title: 'Estimated energy',
+                              subtitle: 'Appliance watts and optional electricity price',
+                              onTap: _busy ? null : _openEnergyEstimateSettings,
+                            ),
+                            if (isOwner) ...[
+                              const _SettingsDivider(),
+                              _SettingsTile(
+                                icon: Icons.groups_rounded,
+                                iconColor: AppTheme.primaryDark,
+                                title: 'Manage access',
+                                subtitle: 'Share this device or transfer ownership',
+                                onTap: _busy ? null : _openManageAccess,
+                              ),
+                              const _SettingsDivider(),
+                              _SettingsTile(
+                                icon: online
+                                    ? Icons.wifi_find_rounded
+                                    : Icons.wifi_tethering_rounded,
+                                iconColor: Colors.orange,
+                                title: 'Wi-Fi & recovery',
+                                subtitle: online
+                                    ? 'Change home Wi-Fi or open the setup hotspot. Use the password on the device label or box.'
+                                    : 'Reconnect after a router or Wi-Fi password change. Keep the device label or box nearby.',
+                                trailing: Icon(
+                                  Icons.chevron_right_rounded,
+                                  color: AppTheme.lightText,
+                                ),
+                                onTap:
+                                _busy ? null : () => _changeWiFi(online: online),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (!isOwner) ...[
+                          const SizedBox(height: 13),
+                          const _SharedMemberSettingsNote(),
+                        ],
+                        const SizedBox(height: 22),
+                        const _SettingsSectionTitle('Device information'),
+                        const SizedBox(height: 10),
+                        if (device != null)
+                          _DeviceInformationCard(device: device)
+                        else
+                          _DeviceInformationPlaceholder(deviceId: widget.deviceId),
+                        const SizedBox(height: 22),
+                        const _SettingsSectionTitle('Device management'),
+                        const SizedBox(height: 10),
+                        _SettingsCard(
+                          children: [
+                            _SettingsTile(
+                              icon: Icons.inventory_2_outlined,
+                              iconColor: Colors.red,
+                              title: 'Archive device',
+                              subtitle: 'Hide it from Home and restore it later',
+                              titleColor: Colors.red.shade700,
+                              onTap: _busy ? null : _removeFromMyDevices,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        const _SafetyNote(),
+                      ],
+                    ),
+                    if (_openingWiFiSetup)
+                      _WiFiSetupOpeningOverlay(
+                        hotspotName: WifiSetupScreen.hotspotNameForDevice(
+                          widget.deviceId,
+                        ),
+                        progress: _wifiSetupProgress,
+                      ),
+                  ],
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }
+}
 
+class _WiFiSetupOpeningOverlay extends StatelessWidget {
+  final String hotspotName;
+  final String progress;
+
+  const _WiFiSetupOpeningOverlay({
+    required this.hotspotName,
+    required this.progress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.26),
+        child: SafeArea(
+          minimum: const EdgeInsets.symmetric(horizontal: 26, vertical: 24),
+          child: Center(
+            child: Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxWidth: 360),
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 22),
+              decoration: BoxDecoration(
+                color: AppTheme.card,
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(color: AppTheme.outline),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.16),
+                    blurRadius: 28,
+                    offset: const Offset(0, 14),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    height: 56,
+                    width: 56,
+                    decoration: BoxDecoration(
+                      color: AppTheme.primary.withValues(alpha: 0.11),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.wifi_find_rounded,
+                      color: AppTheme.primary,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(height: 17),
+                  Text(
+                    context.tr('Opening Wi-Fi setup'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppTheme.darkText,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    progress.isEmpty
+                        ? context.tr('Please wait while your switch prepares setup.')
+                        : progress,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppTheme.lightText,
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  const SizedBox(
+                    height: 26,
+                    width: 26,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primary.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    child: Text(
+                      '${context.tr('Next, connect your phone to')} $hotspotName. ${context.tr('Do not press Change Wi-Fi again.')}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppTheme.primaryDark,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SharedMemberSettingsNote extends StatelessWidget {
+  const _SharedMemberSettingsNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.primary.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.14)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.groups_outlined, color: AppTheme.primaryDark),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              context.tr('You have shared access. You can control power, timers, and your own energy estimate. The owner manages Wi-Fi, schedules, and access.'),
+              style: TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ProductRegistrationCard extends StatelessWidget {
@@ -394,8 +659,8 @@ class _ProductRegistrationCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  device.registrationLabel,
-                  style: const TextStyle(
+                  context.tr(device.registrationLabel),
+                  style: TextStyle(
                     color: AppTheme.darkText,
                     fontSize: 15,
                     fontWeight: FontWeight.w900,
@@ -403,8 +668,8 @@ class _ProductRegistrationCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  device.registrationDetail,
-                  style: const TextStyle(
+                  context.tr(device.registrationDetail),
+                  style: TextStyle(
                     color: AppTheme.lightText,
                     fontSize: 12,
                     height: 1.35,
@@ -412,7 +677,7 @@ class _ProductRegistrationCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Product ID: ${device.id}',
+                  '${context.tr('Product ID')}: ${device.id}',
                   style: TextStyle(
                     color: color,
                     fontSize: 11,
@@ -461,26 +726,26 @@ class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Rename Device'),
+      title: Text(context.tr('Rename Device')),
       content: TextField(
         controller: _controller,
         autofocus: true,
         maxLength: 40,
         textCapitalization: TextCapitalization.words,
-        decoration: const InputDecoration(
-          hintText: 'e.g. Living Room Switch',
-          prefixIcon: Icon(Icons.edit_rounded),
+        decoration: InputDecoration(
+          hintText: context.tr('e.g. Living Room Switch'),
+          prefixIcon: const Icon(Icons.edit_rounded),
         ),
         onSubmitted: (_) => _submit(),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.tr('Cancel')),
         ),
         FilledButton(
           onPressed: _submit,
-          child: const Text('Save'),
+          child: Text(context.tr('Save')),
         ),
       ],
     );
@@ -504,35 +769,31 @@ class _DeviceIdentityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = online ? AppTheme.success : Colors.orange;
+    final statusColor = online ? const Color(0xFF74F1B2) : const Color(0xFFFFD47C);
+    final statusText = online
+        ? '${context.tr('Online')} · $lastSeen'
+        : '${context.tr('Offline')} · $lastSeen';
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppTheme.outline),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.035),
-            blurRadius: 14,
-            offset: const Offset(0, 7),
-          ),
-        ],
-      ),
+    return TechHeroSurface(
+      padding: const EdgeInsets.all(17),
+      radius: 24,
+      colors: online
+          ? const [AppTheme.primaryDark, AppTheme.primary, AppTheme.electric]
+          : const [Color(0xFF334968), Color(0xFF526D92), Color(0xFF7196C6)],
       child: Row(
         children: [
           Container(
-            height: 50,
-            width: 50,
+            height: 52,
+            width: 52,
             decoration: BoxDecoration(
-              color: AppTheme.primary.withValues(alpha: 0.10),
+              color: Colors.white.withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(17),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.17)),
             ),
             child: const Icon(
               Icons.power_outlined,
-              color: AppTheme.primaryDark,
-              size: 27,
+              color: Colors.white,
+              size: 28,
             ),
           ),
           const SizedBox(width: 13),
@@ -545,7 +806,7 @@ class _DeviceIdentityCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: AppTheme.darkText,
+                    color: Colors.white,
                     fontSize: 17,
                     fontWeight: FontWeight.w900,
                   ),
@@ -555,32 +816,38 @@ class _DeviceIdentityCard extends StatelessWidget {
                   '$model · $deviceId',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppTheme.lightText,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.76),
                     fontSize: 12,
                   ),
                 ),
-                const SizedBox(height: 9),
-                Row(
-                  children: [
-                    Container(
-                      height: 8,
-                      width: 8,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.13),
+                    borderRadius: BorderRadius.circular(99),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        height: 7,
+                        width: 7,
+                        decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      online ? 'Online · $lastSeen' : 'Offline · $lastSeen',
-                      style: TextStyle(
-                        color: statusColor,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
+                      const SizedBox(width: 6),
+                      Text(
+                        statusText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.8,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -622,8 +889,8 @@ class _DeviceInformationCard extends StatelessWidget {
                 size: 21,
               ),
             ),
-            title: const Text(
-              'Device details',
+            title: Text(
+              context.tr('Device details'),
               style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 14,
@@ -632,7 +899,7 @@ class _DeviceInformationCard extends StatelessWidget {
             ),
             subtitle: Text(
               '${device.model} · ${device.firmwareVersion}',
-              style: const TextStyle(color: AppTheme.lightText, fontSize: 12),
+              style: TextStyle(color: AppTheme.lightText, fontSize: 12),
             ),
             children: [
               _InfoLine(label: 'Device ID', value: device.id),
@@ -640,9 +907,11 @@ class _DeviceInformationCard extends StatelessWidget {
               _InfoLine(label: 'Firmware', value: device.firmwareVersion),
               _InfoLine(
                 label: 'Channels',
-                value: '${device.channelCount} channel${device.channelCount == 1 ? '' : 's'}',
+                value: device.channelCount == 1
+                    ? '${device.channelCount} ${context.tr('channel')}'
+                    : '${device.channelCount} ${context.tr('channels')}',
               ),
-              _InfoLine(label: 'Product status', value: device.registrationLabel),
+              _InfoLine(label: 'Product status', value: context.tr(device.registrationLabel)),
               _InfoLine(label: 'Last seen', value: device.lastSeenText),
             ],
           ),
@@ -664,12 +933,12 @@ class _DeviceInformationPlaceholder extends StatelessWidget {
       decoration: _settingsCardDecoration(),
       child: Row(
         children: [
-          const Icon(Icons.info_outline_rounded, color: AppTheme.lightText),
+          Icon(Icons.info_outline_rounded, color: AppTheme.lightText),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Device information will appear when $deviceId is available.',
-              style: const TextStyle(
+              '${context.tr('Device information will appear when')} $deviceId ${context.tr('is available.')}',
+              style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
                 height: 1.35,
@@ -698,8 +967,8 @@ class _InfoLine extends StatelessWidget {
           SizedBox(
             width: 92,
             child: Text(
-              label,
-              style: const TextStyle(
+              context.tr(label),
+              style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
@@ -711,7 +980,7 @@ class _InfoLine extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.right,
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 12,
                 fontWeight: FontWeight.w800,
@@ -732,8 +1001,8 @@ class _SettingsSectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      text,
-      style: const TextStyle(
+      context.tr(text),
+      style: TextStyle(
         color: AppTheme.darkText,
         fontSize: 16,
         fontWeight: FontWeight.w900,
@@ -816,7 +1085,7 @@ class _SettingsTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      title,
+                      context.tr(title),
                       style: TextStyle(
                         color: titleColor ?? AppTheme.darkText,
                         fontWeight: FontWeight.w900,
@@ -825,8 +1094,8 @@ class _SettingsTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      subtitle,
-                      style: const TextStyle(
+                      context.tr(subtitle),
+                      style: TextStyle(
                         color: AppTheme.lightText,
                         fontSize: 12,
                         height: 1.3,
@@ -836,7 +1105,7 @@ class _SettingsTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              trailing ?? const Icon(Icons.chevron_right_rounded, color: AppTheme.lightText),
+              trailing ?? Icon(Icons.chevron_right_rounded, color: AppTheme.lightText),
             ],
           ),
         ),
@@ -870,8 +1139,8 @@ class _OfflinePill extends StatelessWidget {
         color: Colors.orange.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Text(
-        'Offline',
+      child: Text(
+        context.tr('Offline'),
         style: TextStyle(
           color: Colors.orange,
           fontSize: 10,
@@ -894,14 +1163,14 @@ class _SafetyNote extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.blue.withValues(alpha: 0.13)),
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(Icons.info_outline_rounded, color: Colors.blue),
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Change WiFi clears only the saved WiFi credentials. The setup screen now tests new WiFi details before saving them. Your relay, timer and schedule cache remain in the device.',
+              context.tr('Wi-Fi setup only updates the switch network. Your controls, timers, schedules, and access stay unchanged.'),
               style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 12,
@@ -915,11 +1184,174 @@ class _SafetyNote extends StatelessWidget {
   }
 }
 
-class _ConfirmWifiResetSheet extends StatelessWidget {
+class _OfflineWifiRecoverySheet extends StatelessWidget {
+  final String hotspotName;
+  final VoidCallback onCancel;
+  final VoidCallback onContinue;
+
+  const _OfflineWifiRecoverySheet({
+    required this.hotspotName,
+    required this.onCancel,
+    required this.onContinue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
+        decoration: BoxDecoration(
+          color: AppTheme.background,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                height: 4,
+                width: 42,
+                decoration: BoxDecoration(
+                  color: AppTheme.lightText.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Container(
+                  height: 46,
+                  width: 46,
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: const Icon(
+                    Icons.wifi_tethering_rounded,
+                    color: Colors.orange,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    context.tr('Reconnect an offline switch'),
+                    style: TextStyle(
+                      color: AppTheme.darkText,
+                      fontSize: 21,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              context.tr('The app cannot change Wi-Fi through Firebase while the switch is offline. Use the switch recovery hotspot instead. This does not pair the device again or change ownership.'),
+              style: TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 14,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 18),
+            _RecoveryInstructionRow(
+              number: '1',
+              text: 'Keep the switch powered. Hold the Wi-Fi button for 3 seconds, release it, then wait 10 seconds. If the button is not available, keep the switch powered and wait about 1 minute for automatic recovery.',
+            ),
+            const SizedBox(height: 10),
+            _RecoveryInstructionRow(
+              number: '2',
+              text: '${context.tr('Open phone Wi-Fi settings and connect to')} $hotspotName. ${context.tr('Choose “Stay connected” if your phone says the hotspot has no internet.')}',
+            ),
+            const SizedBox(height: 10),
+            _RecoveryInstructionRow(
+              number: '3',
+              text: context.tr('Return here, continue, and test the hotspot before entering the new home Wi-Fi details.'),
+            ),
+            const SizedBox(height: 22),
+            SizedBox(
+              width: double.infinity,
+              height: 54,
+              child: FilledButton.icon(
+                onPressed: onContinue,
+                icon: const Icon(Icons.arrow_forward_rounded),
+                label: Text(context.tr('I am connected to the hotspot')),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton(
+                onPressed: onCancel,
+                child: Text(context.tr('Cancel')),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecoveryInstructionRow extends StatelessWidget {
+  final String number;
+  final String text;
+
+  const _RecoveryInstructionRow({
+    required this.number,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          height: 23,
+          width: 23,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: AppTheme.primary.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: Text(
+            number,
+            style: const TextStyle(
+              color: AppTheme.primaryDark,
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            context.tr(text),
+            style: TextStyle(
+              color: AppTheme.darkText,
+              fontSize: 13,
+              height: 1.36,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConfirmWifiRecoverySheet extends StatelessWidget {
+  final String hotspotName;
   final VoidCallback onCancel;
   final VoidCallback onConfirm;
 
-  const _ConfirmWifiResetSheet({
+  const _ConfirmWifiRecoverySheet({
+    required this.hotspotName,
     required this.onCancel,
     required this.onConfirm,
   });
@@ -930,7 +1362,7 @@ class _ConfirmWifiResetSheet extends StatelessWidget {
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: AppTheme.background,
           borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
         ),
@@ -949,8 +1381,8 @@ class _ConfirmWifiResetSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 22),
-            const Text(
-              'Change WiFi connection?',
+            Text(
+              context.tr('Open Wi-Fi setup?'),
               style: TextStyle(
                 color: AppTheme.darkText,
                 fontSize: 22,
@@ -958,8 +1390,8 @@ class _ConfirmWifiResetSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'The switch will clear its current WiFi, restart, and create EHC_SETUP_A7F92. You will then enter the new WiFi details.',
+            Text(
+              '${context.tr('The switch will create')} $hotspotName. ${context.tr('Your current Wi-Fi stays saved until the new network works.')}',
               style: TextStyle(
                 color: AppTheme.lightText,
                 fontSize: 14,
@@ -973,7 +1405,7 @@ class _ConfirmWifiResetSheet extends StatelessWidget {
               child: FilledButton.icon(
                 onPressed: onConfirm,
                 icon: const Icon(Icons.wifi_find_rounded),
-                label: const Text('Reset WiFi & Continue'),
+                label: Text(context.tr('Open Wi-Fi setup')),
               ),
             ),
             const SizedBox(height: 10),
@@ -982,7 +1414,7 @@ class _ConfirmWifiResetSheet extends StatelessWidget {
               height: 50,
               child: OutlinedButton(
                 onPressed: onCancel,
-                child: const Text('Cancel'),
+                child: Text(context.tr('Cancel')),
               ),
             ),
           ],

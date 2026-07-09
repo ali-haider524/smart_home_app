@@ -104,7 +104,7 @@ class _LinkEmailScreenState extends State<LinkEmailScreen> {
                 color: AppTheme.primary,
               ),
               const SizedBox(height: 20),
-              const Text(
+              Text(
                 'Add a recovery email',
                 style: TextStyle(
                   color: AppTheme.darkText,
@@ -113,7 +113,7 @@ class _LinkEmailScreenState extends State<LinkEmailScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              const Text(
+              Text(
                 'Use an email address as a second sign-in and recovery option. You will choose a password for email sign-in. Your devices stay on the same account.',
                 style: TextStyle(color: AppTheme.lightText, height: 1.45),
               ),
